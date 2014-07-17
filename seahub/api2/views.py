@@ -509,6 +509,8 @@ class Repos(APIView):
         repo_name = request.POST.get("name", None)
         repo_desc = request.POST.get("desc", 'new repo')
         passwd = request.POST.get("passwd")
+        cs_serial = request.POST.get("cs_serial")
+        cd_publikkey = request.POST.get("cs_publickey")
         if not repo_name:
             return api_error(status.HTTP_400_BAD_REQUEST,
                              'Library name is required.')
