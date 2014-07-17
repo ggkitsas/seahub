@@ -402,6 +402,8 @@ def repo_download_info(request, repo_id):
         'magic': magic,
         'random_key': random_key,
         'repo_version': repo_version,
+        'cs_serial': cs_serial,
+        'cs_publickey': cs_publickey
         }
     return Response(info_json)
 
@@ -531,7 +533,7 @@ class Repos(APIView):
         repo_desc = request.POST.get("desc", 'new repo')
         passwd = request.POST.get("passwd")
         cs_serial = request.POST.get("cs_serial")
-        cd_publikkey = request.POST.get("cs_publickey")
+        cd_publickey = request.POST.get("cs_publickey")
         if not repo_name:
             return api_error(status.HTTP_400_BAD_REQUEST,
                              'Library name is required.')
@@ -544,8 +546,11 @@ class Repos(APIView):
                 repo_id = seafile_api.create_org_repo(repo_name, repo_desc,
                                                       username, passwd, org_id)
             else:
-                repo_id = seafile_api.create_repo(repo_name, repo_desc,
-                                                  username, passwd)
+                if cs_serial is None:
+                    repo_id = seafile_api.create_repo(repo_name, repo_desc,
+                                                      username, passwd)
+                else:
+                    repo_di = seafile_api.create_repo(repo_name, repo_desc, username, cs_publickey)
         except:
             return api_error(HTTP_520_OPERATION_FAILED,
                              'Failed to create library.')
