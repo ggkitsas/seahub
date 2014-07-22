@@ -373,7 +373,9 @@ def repo_download_info(request, repo_id):
     enc_version = repo.enc_version
     repo_version = repo.version
 #    cs_serial = repo.cs_serial
+    hashedPublicKey = repo.hashedPublicKey
     cs_publickey = repo.cs_publickey
+    cs_publickey_exp = repo.cs_publickey_exp
 
     info_json = {
         'relay_id': relay_id,
@@ -389,7 +391,9 @@ def repo_download_info(request, repo_id):
         'random_key': random_key,
         'repo_version': repo_version,
 #        'cs_serial': cs_serial,
-        'cs_publickey': cs_publickey
+        'hashedPublicKey': hashedPublicKey,
+        'cs_publickey': cs_publickey,
+        'cs_publickey_exp' : cs_publickey_exp
         }
     return Response(info_json)
 
@@ -514,10 +518,15 @@ class Repos(APIView):
         repo_desc = request.POST.get("desc", 'new repo')
         print "fetching password"
         passwd = request.POST.get("passwd")
+#        print "fetching cs serial number"
 #        cs_serial = request.POST.get("cs_serial")
         print "fetching public key"
         cs_publickey = request.POST.get("cs_publickey")
         print "fetched public key"
+        print cs_publickey
+        cs_publickey_exp = request.POST.get("cs_publickey_exp")
+        print "fetched public key exponent"
+        print cs_publickey_exp
         if not repo_name:
             return api_error(status.HTTP_400_BAD_REQUEST,
                              'Library name is required.')
@@ -534,9 +543,10 @@ class Repos(APIView):
                     print "password given"
                     repo_id = seafile_api.create_repo(repo_name, repo_desc,
                                                       username, passwd)
+                    print "created password protected repo"
                 else:
                     print "cs given"
-                    repo_id = seafile_api.create_repo_cryptostick(repo_name, repo_desc, username, cs_publickey)
+                    repo_id = seafile_api.create_repo_cryptostick(repo_name, repo_desc, username, cs_publickey, cs_publickey_exp)
                     print "created repo with cs protection"
         except Exception as e:
             print type(e)     # the exception instance
@@ -548,11 +558,13 @@ class Repos(APIView):
             return api_error(HTTP_520_OPERATION_FAILED,
                              'Failed to create library.')
         else:
+            print "repo_created.send"
             repo_created.send(sender=None,
                               org_id=org_id,
                               creator=username,
                               repo_id=repo_id,
                               repo_name=repo_name)
+            print "repo_download_info"
             resp = repo_download_info(request, repo_id)
 
             # FIXME: according to the HTTP spec, need to return 201 code and
