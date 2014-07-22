@@ -388,6 +388,8 @@ def repo_download_info(request, repo_id):
     random_key = repo.random_key if repo.random_key else ''
     enc_version = repo.enc_version
     repo_version = repo.version
+#    cs_serial = repo.cs_serial
+    cs_publickey = repo.cs_publickey
 
     info_json = {
         'relay_id': relay_id,
@@ -402,7 +404,7 @@ def repo_download_info(request, repo_id):
         'magic': magic,
         'random_key': random_key,
         'repo_version': repo_version,
-        'cs_serial': cs_serial,
+#        'cs_serial': cs_serial,
         'cs_publickey': cs_publickey
         }
     return Response(info_json)
@@ -531,9 +533,12 @@ class Repos(APIView):
         username = request.user.username
         repo_name = request.POST.get("name", None)
         repo_desc = request.POST.get("desc", 'new repo')
+        print "fetching password"
         passwd = request.POST.get("passwd")
-        cs_serial = request.POST.get("cs_serial")
-        cd_publickey = request.POST.get("cs_publickey")
+#        cs_serial = request.POST.get("cs_serial")
+        print "fetching public key"
+        cs_publickey = request.POST.get("cs_publickey")
+        print "fetched public key"
         if not repo_name:
             return api_error(status.HTTP_400_BAD_REQUEST,
                              'Library name is required.')
@@ -546,12 +551,18 @@ class Repos(APIView):
                 repo_id = seafile_api.create_org_repo(repo_name, repo_desc,
                                                       username, passwd, org_id)
             else:
-                if cs_serial is None:
+                if not cs_publickey: # not cs_serial
+                    print "password given"
                     repo_id = seafile_api.create_repo(repo_name, repo_desc,
                                                       username, passwd)
                 else:
-                    repo_di = seafile_api.create_repo(repo_name, repo_desc, username, cs_publickey)
-        except:
+                    print "cs given"
+                    repo_id = seafile_api.create_repo_cryptostick(repo_name, repo_desc, username, cs_publickey)
+                    print "created repo with cs protection"
+        except Exception as e:
+            print type(e)     # the exception instance
+            print e.args      # arguments stored in .args
+            print e           # __str__ allows args to printed directly
             return api_error(HTTP_520_OPERATION_FAILED,
                              'Failed to create library.')
         if not repo_id:
