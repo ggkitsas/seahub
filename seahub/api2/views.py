@@ -357,8 +357,17 @@ class Search(APIView):
 
 ########## Repo related
 def repo_download_info(request, repo_id):
-    repo = get_repo(repo_id)
+    try:
+        repo = get_repo(repo_id)
+    except Exception as e:
+        print type(e)     # the exception instance
+        print e.args      # arguments stored in .args
+        print e           # __str__ allows args to printed directly
+
+    print repo_id
+    print repo
     if not repo:
+        print "repo_download_info"
         return api_error(status.HTTP_404_NOT_FOUND, 'Repo not found.')
 
     # generate download url for client
@@ -370,12 +379,15 @@ def repo_download_info(request, repo_id):
     enc = 1 if repo.encrypted else ''
     magic = repo.magic if repo.encrypted else ''
     random_key = repo.random_key if repo.random_key else ''
+    print "random_key:"
+    print random_key
     enc_version = repo.enc_version
     repo_version = repo.version
 #    cs_serial = repo.cs_serial
-    hashedPublicKey = repo.hashedPublicKey
-    cs_publickey = repo.cs_publickey
-    cs_publickey_exp = repo.cs_publickey_exp
+    hashedPublicKey = repo.hashed_public_key if repo.hashed_public_key else ''
+    cs_random_key = repo.cs_random_key if repo.cs_random_key else ''
+#    cs_publickey = repo.cs_publickey
+#    cs_publickey_exp = repo.cs_publickey_exp
 
     info_json = {
         'relay_id': relay_id,
@@ -389,12 +401,14 @@ def repo_download_info(request, repo_id):
         'enc_version': enc_version,
         'magic': magic,
         'random_key': random_key,
+        'cs_random_key' : cs_random_key,
         'repo_version': repo_version,
 #        'cs_serial': cs_serial,
-        'hashedPublicKey': hashedPublicKey,
-        'cs_publickey': cs_publickey,
-        'cs_publickey_exp' : cs_publickey_exp
+        'hashed_public_key': hashedPublicKey
+#        'cs_publickey': cs_publickey,
+#        'cs_publickey_exp' : cs_publickey_exp
         }
+    print "after info_json"
     return Response(info_json)
 
 class Repos(APIView):
@@ -432,6 +446,9 @@ class Repos(APIView):
                 repo["enc_version"] = r.enc_version
                 repo["magic"] = r.magic
                 repo["random_key"] = r.random_key
+                repo["cs_random_key"] = r.cs_random_key
+                repo["hashed_public_key"] = r.hashed_public_key
+
             repos_json.append(repo)
 
         shared_repos = get_share_in_repo_list(request, -1, -1)
@@ -459,6 +476,8 @@ class Repos(APIView):
                 repo["enc_version"] = r.enc_version
                 repo["magic"] = r.magic
                 repo["random_key"] = r.random_key
+                repo["cs_random_key"] = r.cs_random_key
+                repo["hashed_public_key"] = r.hashed_public_key
             repos_json.append(repo)
 
         groups = get_groups_by_user(request)
@@ -483,6 +502,8 @@ class Repos(APIView):
                 repo["enc_version"] = r.enc_version
                 repo["magic"] = r.magic
                 repo["random_key"] = r.random_key
+                repo["cs_random_key"] = r.cs_random_key
+                repo["hashed_public_key"] = r.hashed_public_key
             repos_json.append(repo)
 
         public_repos = list_inner_pub_repos(request)
@@ -508,6 +529,8 @@ class Repos(APIView):
                 repo["enc_version"] = commit.enc_version
                 repo["magic"] = commit.magic
                 repo["random_key"] = commit.random_key
+                repo["cs_random_key"] = r.cs_random_key
+                repo["hashed_public_key"] = r.hashed_public_key
             repos_json.append(repo)
 
         return Response(repos_json)
@@ -541,13 +564,15 @@ class Repos(APIView):
             else:
                 if not cs_publickey: # not cs_serial
                     print "password given"
+                    print passwd
                     repo_id = seafile_api.create_repo(repo_name, repo_desc,
                                                       username, passwd)
                     print "created password protected repo"
                 else:
                     print "cs given"
                     repo_id = seafile_api.create_repo_cryptostick(repo_name, repo_desc, username, cs_publickey, cs_publickey_exp)
-                    print "created repo with cs protection"
+                    print "created repo with cs protection "
+                    print repo_id
         except Exception as e:
             print type(e)     # the exception instance
             print e.args      # arguments stored in .args
@@ -558,13 +583,12 @@ class Repos(APIView):
             return api_error(HTTP_520_OPERATION_FAILED,
                              'Failed to create library.')
         else:
-            print "repo_created.send"
+            repo = get_repo(repo_id)
             repo_created.send(sender=None,
                               org_id=org_id,
                               creator=username,
                               repo_id=repo_id,
                               repo_name=repo_name)
-            print "repo_download_info"
             resp = repo_download_info(request, repo_id)
 
             # FIXME: according to the HTTP spec, need to return 201 code and
@@ -573,6 +597,7 @@ class Repos(APIView):
             return resp
 
 def set_repo_password(request, repo, password):
+    print "CALLED set_repo_password"
     assert password, 'password must not be none'
 
     try:
@@ -590,6 +615,7 @@ def set_repo_password(request, repo, password):
             return api_error(status.HTTP_500_INTERNAL_SERVER_ERROR, e.msg)
 
 def check_set_repo_password(request, repo):
+    print "CALLED check_set_repo_password"
     if not check_permission(repo.id, request.user.username):
         return api_error(status.HTTP_403_FORBIDDEN, 'Forbid to access this repo.')
 
@@ -612,6 +638,7 @@ def check_set_repo_password(request, repo):
             return set_repo_password(request, repo, password)
 
 def check_repo_access_permission(request, repo):
+    print "CALLED check_repo_access_permission"
     if not check_permission(repo.id, request.user.username):
         return api_error(status.HTTP_403_FORBIDDEN, 'Forbid to access this repo.')
 
@@ -661,6 +688,8 @@ class Repo(APIView):
             repo_json["enc_version"] = repo.enc_version
             repo_json["magic"] = repo.magic
             repo_json["random_key"] = repo.random_key
+            repo_json["cs_random_key"] = repo.cs_random_key
+            repo_json["hashed_public_key"] = repo.hashed_public_key
 
         return Response(repo_json)
 
@@ -966,6 +995,7 @@ def get_shared_link(request, repo_id, path):
     return Response(file_shared_link)
 
 def get_repo_file(request, repo_id, file_id, file_name, op):
+    print "CALLED get_repo_file"
     if op == 'download':
         token = seafile_api.get_httpserver_access_token(repo_id, file_id, op,
                                                         request.user.username)
