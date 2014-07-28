@@ -395,14 +395,20 @@ def repo_download_info(request, repo_id):
     enc = 1 if repo.encrypted else ''
     magic = repo.magic if repo.encrypted else ''
     random_key = repo.random_key if repo.random_key else ''
-    print "random_key:"
-    print random_key
     enc_version = repo.enc_version
     repo_version = repo.version
 #    cs_serial = repo.cs_serial
     hashedPublicKey = repo.hashed_public_key if repo.hashed_public_key else ''
     cs_random_key = repo.cs_random_key if repo.cs_random_key else ''
-#    cs_publickey = repo.cs_publickey
+    print "random_key:"
+    print random_key
+    print "cs_random_key"
+    print cs_random_key
+    print "hashed public key:"
+    print hashedPublicKey
+    cs_publickey = repo.cs_publickey
+#    print "public key modulus"
+#    print cs_publickey
 #    cs_publickey_exp = repo.cs_publickey_exp
 
     info_json = {
@@ -571,6 +577,10 @@ class Repos(APIView):
         cs_publickey_exp = request.POST.get("cs_publickey_exp")
         print "fetched public key exponent"
         print cs_publickey_exp
+#        hashed_public_key = request.POST.get("hashed_public_key")
+#        print "hashed_public_key:"
+#        print hashed_public_key
+
         if not repo_name:
             return api_error(status.HTTP_400_BAD_REQUEST,
                              'Library name is required.')
