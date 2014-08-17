@@ -381,7 +381,7 @@ def repo_download_info(request, repo_id):
     random_key = repo.random_key if repo.random_key else ''
     enc_version = repo.enc_version
     repo_version = repo.version
-#    cs_serial = repo.cs_serial
+    cs_serial_no = repo.cs_serial_no if repo.cs_serial_no else ''
     hashedPublicKey = repo.hashed_public_key if repo.hashed_public_key else ''
     cs_random_key = repo.cs_random_key if repo.cs_random_key else ''
     print "random_key:"
@@ -390,6 +390,8 @@ def repo_download_info(request, repo_id):
     print cs_random_key
     print "hashed public key:"
     print hashedPublicKey
+    print "serial#:"
+    print cs_serial_no
     cs_publickey = repo.cs_publickey
 #    print "public key modulus"
 #    print cs_publickey
@@ -409,7 +411,7 @@ def repo_download_info(request, repo_id):
         'random_key': random_key,
         'cs_random_key' : cs_random_key,
         'repo_version': repo_version,
-#        'cs_serial': cs_serial,
+        'cs_serial_no': cs_serial_no,
         'hashed_public_key': hashedPublicKey
 #        'cs_publickey': cs_publickey,
 #        'cs_publickey_exp' : cs_publickey_exp
@@ -453,6 +455,7 @@ class Repos(APIView):
                 repo["magic"] = r.magic
                 repo["random_key"] = r.random_key
                 repo["cs_random_key"] = r.cs_random_key
+                repo["cs_serial_no"] = r.cs_serial_no
                 repo["hashed_public_key"] = r.hashed_public_key
 
             repos_json.append(repo)
@@ -483,6 +486,7 @@ class Repos(APIView):
                 repo["magic"] = r.magic
                 repo["random_key"] = r.random_key
                 repo["cs_random_key"] = r.cs_random_key
+                repo["cs_serial_no"] = r.cs_serial_no
                 repo["hashed_public_key"] = r.hashed_public_key
             repos_json.append(repo)
 
@@ -509,6 +513,7 @@ class Repos(APIView):
                 repo["magic"] = r.magic
                 repo["random_key"] = r.random_key
                 repo["cs_random_key"] = r.cs_random_key
+                repo["cs_serial_no"] = r.cs_serial_no
                 repo["hashed_public_key"] = r.hashed_public_key
             repos_json.append(repo)
 
@@ -536,6 +541,7 @@ class Repos(APIView):
                 repo["magic"] = commit.magic
                 repo["random_key"] = commit.random_key
                 repo["cs_random_key"] = r.cs_random_key
+                repo["cs_serial_no"] = r.cs_serial_no
                 repo["hashed_public_key"] = r.hashed_public_key
             repos_json.append(repo)
 
@@ -547,8 +553,9 @@ class Repos(APIView):
         repo_desc = request.POST.get("desc", 'new repo')
         print "fetching password"
         passwd = request.POST.get("passwd")
-#        print "fetching cs serial number"
-#        cs_serial = request.POST.get("cs_serial")
+        print "fetching cs serial number"
+        cs_serial_no = request.POST.get("cs_serial_no")
+        print cs_serial_no
         print "fetching public key"
         cs_publickey = request.POST.get("cs_publickey")
         print "fetched public key"
@@ -580,7 +587,7 @@ class Repos(APIView):
                     print "created password protected repo"
                 else:
                     print "cs given"
-                    repo_id = seafile_api.create_repo_cryptostick(repo_name, repo_desc, username, cs_publickey, cs_publickey_exp)
+                    repo_id = seafile_api.create_repo_cryptostick(repo_name, repo_desc, username, cs_publickey, cs_publickey_exp, cs_serial_no)
                     print "created repo with cs protection "
                     print repo_id
         except Exception as e:
@@ -699,6 +706,7 @@ class Repo(APIView):
             repo_json["magic"] = repo.magic
             repo_json["random_key"] = repo.random_key
             repo_json["cs_random_key"] = repo.cs_random_key
+            repo_json["cs_serial_no"] = r.cs_serial_no
             repo_json["hashed_public_key"] = repo.hashed_public_key
 
         return Response(repo_json)
