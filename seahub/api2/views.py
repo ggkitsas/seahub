@@ -824,7 +824,8 @@ class DownloadRepo(APIView):
         if not is_repo_accessible(repo_id, username):
             return api_error(status.HTTP_403_FORBIDDEN,
                              'You do not have permission to get repo.')
-        seafile_api.seafile_set_cs_serial_no(repo_id, request.cs_serial_no)
+
+        seafile_api.set_cs_serial_no(repo_id, username, "12345678")
         return repo_download_info(request, repo_id)
 
 class RepoPublic(APIView):
