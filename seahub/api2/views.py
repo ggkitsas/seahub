@@ -409,9 +409,6 @@ def repo_download_info(request, repo_id):
     print "serial#:"
     print cs_serial_no
     cs_publickey = repo.cs_publickey
-#    print "public key modulus"
-#    print cs_publickey
-#    cs_publickey_exp = repo.cs_publickey_exp
 
     info_json = {
         'relay_id': relay_id,
@@ -429,8 +426,6 @@ def repo_download_info(request, repo_id):
         'repo_version': repo_version,
         'cs_serial_no': cs_serial_no,
         'hashed_public_key': hashedPublicKey
-#        'cs_publickey': cs_publickey,
-#        'cs_publickey_exp' : cs_publickey_exp
         }
     print "after info_json"
     return Response(info_json)
@@ -632,7 +627,6 @@ class Repos(APIView):
             return resp
 
 def set_repo_password(request, repo, password):
-    print "CALLED set_repo_password"
     assert password, 'password must not be none'
 
     try:
@@ -824,8 +818,6 @@ class DownloadRepo(APIView):
         if not is_repo_accessible(repo_id, username):
             return api_error(status.HTTP_403_FORBIDDEN,
                              'You do not have permission to get repo.')
-
-        seafile_api.set_cs_serial_no(repo_id, username, "12345678")
         return repo_download_info(request, repo_id)
 
 class RepoPublic(APIView):
