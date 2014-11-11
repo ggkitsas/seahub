@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import datetime
-import simplejson as json
+import json
 from django.http import HttpResponse, HttpResponseRedirect, Http404
 from django.shortcuts import render_to_response
 from django.template.loader import render_to_string
@@ -9,17 +9,17 @@ from django.core.urlresolvers import reverse
 from django.template import RequestContext
 from django.core.paginator import EmptyPage, InvalidPage
 from django.utils.translation import ugettext as _
-from django.views.decorators.http import require_POST
 
 from models import UserMessage, UserMsgAttachment
 from message import msg_info_list
-from seahub.auth.decorators import login_required
+from seahub.auth.decorators import login_required, login_required_ajax
 from seahub.base.accounts import User
 from seahub.base.decorators import user_mods_check
 from seahub.views import is_registered_user
 from seahub.share.models import PrivateFileDirShare
 from seahub.utils import is_valid_username
 from seahub.utils.paginator import Paginator
+from seahub.notifications.models import UserNotification
 
 @login_required
 @user_mods_check
@@ -101,12 +101,13 @@ def user_msg_list(request, id_or_email):
     person_msgs.page_range = paginator.get_page_range(person_msgs.number)
     person_msgs.object_list = list(person_msgs.object_list)
 
+    UserNotification.objects.seen_user_msg_notices(username, to_email)
     return render_to_response("message/user_msg_list.html", {
             "person_msgs": person_msgs,
             "to_email": to_email,
             }, context_instance=RequestContext(request))
 
-@login_required
+@login_required_ajax
 def user_msg_remove(request, msg_id):
     """Remove sent message.
     """
@@ -132,7 +133,7 @@ def user_msg_remove(request, msg_id):
                         'err_msg': _(u"You don't have the permission.")
                         }), content_type=json_ct)
 
-@login_required
+@login_required_ajax
 def user_received_msg_remove(request, msg_id):
     """Remove received message.
     """
@@ -158,13 +159,12 @@ def user_received_msg_remove(request, msg_id):
                         'err_msg': _(u"You don't have the permission."),
                         }), content_type=json_ct)
 
-@login_required
-@require_POST
+@login_required_ajax
 def message_send(request):
     """Handle POST request to send message to user(s).
     """
 
-    if not request.is_ajax() or request.method != 'POST':
+    if request.method != 'POST':
         raise Http404
 
     content_type = 'application/json; charset=utf-8'
@@ -249,13 +249,10 @@ def message_send(request):
         return HttpResponse(json.dumps({"html": html, "error": errors}), status=400, content_type=content_type)
 
 
-@login_required
+@login_required_ajax
 def msg_count(request):
     """Count user's unread message.
     """
-    if not request.is_ajax():
-        raise Http404
-
     content_type = 'application/json; charset=utf-8'
     username = request.user.username
     

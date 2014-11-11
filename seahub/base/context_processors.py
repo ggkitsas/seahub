@@ -7,6 +7,7 @@ These are referenced from the setting TEMPLATE_CONTEXT_PROCESSORS and used by
 RequestContext.
 """
 
+import re
 from seahub.settings import SEAFILE_VERSION, SITE_TITLE, SITE_NAME, \
     ENABLE_SIGNUP, MAX_FILE_NAME, BRANDING_CSS, LOGO_PATH, LOGO_WIDTH, LOGO_HEIGHT,\
     SHOW_REPO_DOWNLOAD_BUTTON, REPO_PASSWORD_MIN_LENGTH
@@ -31,7 +32,7 @@ try:
     from seahub.settings import MULTI_TENANCY
 except ImportError:
     MULTI_TENANCY = False
-    
+
 def base(request):
     """
     Add seahub base configure to the context.
@@ -51,6 +52,11 @@ def base(request):
         grps = request.user.joined_groups[:8]
     except AttributeError:      # anonymous user
         grps = None
+
+    # extra repo id from request path, use in search
+    repo_id_patt = r".*/([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})/.*"
+    m = re.match(repo_id_patt, request.get_full_path())
+    search_repo_id = m.group(1) if m is not None else None
 
     return {
         'seafile_version': SEAFILE_VERSION,
@@ -75,4 +81,5 @@ def base(request):
         'sysadmin_extra_enabled': ENABLE_SYSADMIN_EXTRA,
         'grps': grps,
         'multi_tenancy': MULTI_TENANCY,
+        'search_repo_id': search_repo_id,
         }

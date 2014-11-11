@@ -16,46 +16,146 @@ if ($('.messages')[0]) {
     setTimeout(function() { $('.messages').addClass('hide'); }, 10000);
 }
 
-$(function(){
-    var msg_ct = $("#msg-count"); 
-    $.ajax({
-        url: msg_ct.data('cturl'),
-        dataType: 'json',
-        cache: false,
-        success: function(data) {
-            if (data['count'] > 0) {
-                $('.num', msg_ct).html(data['count']).removeClass('hide');
+$(function() {
+
+    var msg_ct = $("#msg-count");
+
+    // for login page, and pages without 'header' such as 'file view' page.
+    if (msg_ct.length == 0) {
+        return false;
+    }
+    // original title
+    var orig_doc_title = document.title;
+    msg_ct.data('orig_doc_title', orig_doc_title); // for 'mark all read' in 'notice list' page
+    var reqUnreadNum = function() {
+        $.ajax({
+            url: msg_ct.data('url'),
+            dataType: 'json',
+            cache: false,
+            success: function(data) {
+                var count = data['count'],
+                    num = $('.num', msg_ct);
+                num.html(count);
+                if (count > 0) {
+                    num.removeClass('hide');
+                    document.title = '(' + count + ')' + orig_doc_title;
+                } else {
+                    num.addClass('hide');
+                    document.title = orig_doc_title;
+                }
             }
+        });
+    };
+    reqUnreadNum();
+    // request every 30s
+    setInterval(reqUnreadNum, 30*1000);
+
+    $('#notice-icon').click(function() {
+        var popup = $('#notice-popup');
+        popup.toggleClass('hide');
+        if (!popup.hasClass('hide')) {
+            $('.con', popup).css({'max-height':$(window).height() - $('#header').outerHeight() - $('#notice-popup .hd').outerHeight() - 3});
+            var loading_tip = $('.loading-tip', popup),
+                notice_list = $('#notice-list');
+            notice_list.addClass('hide');
+            loading_tip.show();
+            $('.error', popup).addClass('hide');
+            $.ajax({
+                url: popup.data('url'),
+                dataType: 'json',
+                success: function(data) {
+                    loading_tip.hide();
+                    notice_list.html(data['notice_html']).removeClass('hide');
+
+                    // set a notice to be read when <a> in it is clicked
+                    $('.unread a', notice_list).click(function() {
+                        var notice_id = $(this).parents('.unread').data('id');
+                        var link_href = $(this).attr('href');
+                        $.ajax({
+                            url: notice_list.data('url') + '?notice_id=' + e(notice_id),
+                            dataType:'json',
+                            success: function(data) {
+                                location.href = link_href;
+                            },
+                            error: function() {
+                                location.href = link_href;
+                            }
+                        });
+                        return false;
+                    });
+
+                    $('.detail', notice_list).click(function() {
+                        location.href = $('.brief a', $(this).parent()).attr('href');
+                    });
+                },
+                error: function (xhr, textStatus, errorThrown) {
+                    if (xhr.responseText) {
+                        var error = $.parseJSON(xhr.responseText).error;
+                        loading_tip.hide();
+                        if ($('.error', popup).length == 0) {
+                            loading_tip.after('<p class="error alc">' + error + '</p>');
+                        } else {
+                            $('.error', popup).removeClass('hide');
+                        }
+                    }
+                }
+            });
+        }
+    });
+    $(window).resize(function() {
+        var popup = $('#notice-popup');
+        if (!popup.hasClass('hide')) {
+            $('.con', popup).css({'max-height':$(window).height() - $('#header').outerHeight() - $('#notice-popup .hd').outerHeight() - 3});
         }
     });
 
-$('#msg-count').click(function() {
-    location.href = $(this).data('pgurl');
-});
-
-(function () {
-    var my_info = $('#my-info');
-    var popup = $('#user-info-popup');
-    my_info.click(function() {
-        var loading_tip = $('.loading-tip', popup);
-        if (popup.hasClass('hide')) {
-            popup.removeClass('hide');
-            loading_tip.removeClass('hide');
+    $('#notice-popup .close').click(function() {
+        $('#notice-popup').addClass('hide');
+        if ($('#notice-list .unread').length > 0) {
+            // set all unread notice to be read
+            var url = $(this).data('url');
             $.ajax({
-                url: my_info.data('url'),
+                url: url,
+                dataType: 'json',
+                success: function() {
+                    $('.num', msg_ct).html(0).addClass('hide');
+                    document.title = orig_doc_title;
+                }
+            });
+        }
+    });
+
+    $('#my-info').click(function() {
+        var popup = $('#user-info-popup');
+        popup.toggleClass('hide');
+        if (!popup.hasClass('hide')) {
+            var loading_tip = $('.loading-tip', popup),
+                space_traffic = $('#space-traffic');
+            loading_tip.show();
+            space_traffic.addClass('hide');
+            $('.error', popup).addClass('hide');
+            $.ajax({
+                url: space_traffic.data('url'),
                 dataType: 'json',
                 cache: false,
                 success: function(data) {
-                    loading_tip.addClass('hide');
-                    $('#space-traffic').html(data['html']);
+                    loading_tip.hide();
+                    space_traffic.html(data['html']).removeClass('hide');
+                },
+                error: function (xhr, textStatus, errorThrown) {
+                    if (xhr.responseText) {
+                        var error = $.parseJSON(xhr.responseText).error;
+                        loading_tip.hide();
+                        if ($('.error', popup).length == 0) {
+                            loading_tip.after('<p class="error alc">' + error + '</p>');
+                        } else {
+                            $('.error', popup).removeClass('hide');
+                        }
+                    }
                 }
             });
-        } else {
-            popup.addClass('hide');
         }
-        return false;
     });
-})();
 
 });
 
@@ -64,10 +164,11 @@ $(document).click(function(e) {
     var closePopup = function(popup, popup_switch) {
         if (!popup.hasClass('hide') && !popup.is(target) && !popup.find('*').is(target) && !popup_switch.is(target) && !popup_switch.find('*').is(target) ) {
             popup.addClass('hide');
-        }    
+        }
     };
     closePopup($('#user-info-popup'), $('#my-info'));
     closePopup($('#top-nav-grp-info'), $('#top-nav-grp'));
+    closePopup($('#notice-popup'), $('#notice-icon'));
 });
 
 // search: disable submit when input nothing
@@ -90,11 +191,11 @@ $("tr:gt(0)", $('table')).hover(
     function() {
 		$(this).addClass('hl');
         $(this).find('.op-icon, .op').removeClass('vh');
-    },  
+    },
     function() {
         $(this).find('.op-icon, .op').addClass('vh');
 		$(this).removeClass('hl');
-    }   
+    }
 );
 
 $('input, textarea').placeholder();
@@ -341,32 +442,32 @@ function setCaretPos(inputor, pos) {
         return range.select();
     } else {
         return inputor.setSelectionRange(pos, pos);
-    }   
+    }
 }
 
-function filesizeformat(bytes, precision) {  
+function filesizeformat(bytes, precision) {
     var kilobyte = 1024;
     var megabyte = kilobyte * 1024;
     var gigabyte = megabyte * 1024;
     var terabyte = gigabyte * 1024;
 
     var precision = precision || 0;
-   
+
     if ((bytes >= 0) && (bytes < kilobyte)) {
         return bytes + ' B';
- 
+
     } else if ((bytes >= kilobyte) && (bytes < megabyte)) {
         return (bytes / kilobyte).toFixed(precision) + ' KB';
- 
+
     } else if ((bytes >= megabyte) && (bytes < gigabyte)) {
         return (bytes / megabyte).toFixed(precision) + ' MB';
- 
+
     } else if ((bytes >= gigabyte) && (bytes < terabyte)) {
         return (bytes / gigabyte).toFixed(precision) + ' GB';
- 
+
     } else if (bytes >= terabyte) {
         return (bytes / terabyte).toFixed(precision) + ' TB';
- 
+
     } else {
         return bytes + ' B';
     }
@@ -488,14 +589,14 @@ FileTree.prototype.renderFileTree = function(container, repo_data, options) {
                         for (var i = 0, len = data.length; i < len; i++) {
                             o = data[i];
                             if (o.type == 'dir') {
-                                item = { 
-                                    'data': o.name, 
+                                item = {
+                                    'data': o.name,
                                     'attr': { 'type': o.type },
                                     'state': 'closed'
                                 };
                             } else {
                                 item = {
-                                    'data': o.name, 
+                                    'data': o.name,
                                     'attr': {'type': o.type }
                                 };
                             }
@@ -588,14 +689,14 @@ FileTree.prototype.renderDirTree = function(container, form, repo_data) {
                         for (var i = 0, len = data.length; i < len; i++) {
                             o = data[i];
                             if (o.has_subdir) {
-                                item = { 
-                                    'data': o.name, 
+                                item = {
+                                    'data': o.name,
                                     'attr': { 'type': o.type },
                                     'state': 'closed'
                                 };
                             } else {
                                 item = {
-                                    'data': o.name, 
+                                    'data': o.name,
                                     'attr': {'type': o.type }
                                 };
                             }

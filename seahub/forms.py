@@ -1,22 +1,21 @@
 # encoding: utf-8
+from django.conf import settings
 from django import forms
-from django.contrib.auth.hashers import check_password
 from django.utils.translation import ugettext_lazy as _
 
-from seaserv import ccnet_rpc, ccnet_threaded_rpc, seafserv_threaded_rpc, \
-    is_valid_filename
-
-from base.accounts import User
+from seaserv import seafserv_threaded_rpc, is_valid_filename
 from pysearpc import SearpcError
 
-import settings
+from seahub.base.accounts import User
+from seahub.constants import DEFAULT_USER, GUEST_USER
 
 class AddUserForm(forms.Form):
     """
     Form for adding a user.
     """
-
     email = forms.EmailField()
+    role = forms.ChoiceField(choices=[(DEFAULT_USER, DEFAULT_USER),
+                                      (GUEST_USER, GUEST_USER)])
     password1 = forms.CharField(widget=forms.PasswordInput())
     password2 = forms.CharField(widget=forms.PasswordInput())
 
@@ -24,9 +23,9 @@ class AddUserForm(forms.Form):
         email = self.cleaned_data['email']
         try:
             user = User.objects.get(email=email)
-            raise forms.ValidationError(_("A user with this email already"))
+            raise forms.ValidationError(_("A user with this email already exists."))
         except User.DoesNotExist:
-            return self.cleaned_data['email']            
+            return self.cleaned_data['email']
 
     def clean(self):
         """
@@ -38,7 +37,7 @@ class AddUserForm(forms.Form):
         """
         if 'password1' in self.cleaned_data and 'password2' in self.cleaned_data:
             if self.cleaned_data['password1'] != self.cleaned_data['password2']:
-                raise forms.ValidationError(_("The two password fields didn't match."))
+                raise forms.ValidationError(_("The two passwords didn't match."))
         return self.cleaned_data
 
 class RepoCreateForm(forms.Form):
@@ -58,6 +57,7 @@ class RepoCreateForm(forms.Form):
     uuid = forms.CharField(required=False)
     magic_str = forms.CharField(required=False)
     encrypted_file_key = forms.CharField(required=False)
+
     def clean_repo_name(self):
         repo_name = self.cleaned_data['repo_name']
         if not is_valid_filename(repo_name):
@@ -181,21 +181,6 @@ class RepoSettingForm(forms.Form):
             raise forms.ValidationError(error_msg)
         else:
             return repo_name
-
-class SharedLinkPasswordForm(forms.Form):
-    """
-    Form for user to access shared files/directory.
-    """
-    password = forms.CharField(error_messages={'required': _('Password can\'t be empty')})
-    enc_password = forms.CharField()
-
-    def clean(self):
-        password = self.cleaned_data['password']
-        enc_password = self.cleaned_data['enc_password']
-        if not check_password(password, enc_password):
-            raise forms.ValidationError(_("Please enter a correct password."))
-
-        return self.cleaned_data
 
 class BatchAddUserForm(forms.Form):
     """

@@ -6,7 +6,7 @@ view_snapshot_file, view_shared_file, file_edit, etc.
 
 import os
 import hashlib
-import simplejson as json
+import json
 import stat
 import urllib2
 import chardet
@@ -41,20 +41,22 @@ from seahub.auth.decorators import login_required
 from seahub.base.decorators import repo_passwd_set_required
 from seahub.base.models import FileContributors
 from seahub.contacts.models import Contact
-from seahub.share.models import FileShare, PrivateFileDirShare
+from seahub.share.models import FileShare, PrivateFileDirShare, \
+    check_share_link_access, set_share_link_access
+from seahub.share.forms import SharedLinkPasswordForm
 from seahub.wiki.utils import get_wiki_dirent
 from seahub.wiki.models import WikiDoesNotExist, WikiPageMissing
 from seahub.utils import show_delete_days, render_error, is_org_context, \
     get_file_type_and_ext, gen_file_get_url, gen_file_share_link, \
     render_permission_error, \
-    is_textual_file, show_delete_days, mkstemp, EMPTY_SHA1, HtmlDiff, \
+    is_textual_file, mkstemp, EMPTY_SHA1, HtmlDiff, \
     check_filename_with_rename, gen_inner_file_get_url, normalize_file_path, \
     user_traffic_over_limit
-from seahub.utils.file_types import (IMAGE, PDF, IMAGE, DOCUMENT, SPREADSHEET, MARKDOWN, \
-                                         TEXT, SF, OPENDOCUMENT)
+from seahub.utils.ip import get_remote_ip
+from seahub.utils.file_types import (IMAGE, PDF, DOCUMENT, SPREADSHEET,
+                                     MARKDOWN, TEXT, SF, OPENDOCUMENT)
 from seahub.utils.star import is_file_starred
 from seahub.utils import HAS_OFFICE_CONVERTER
-from seahub.forms import SharedLinkPasswordForm
 
 if HAS_OFFICE_CONVERTER:
     from seahub.utils import query_office_convert_status, query_office_file_pages, \
@@ -64,7 +66,7 @@ import seahub.settings as settings
 from seahub.settings import FILE_ENCODING_LIST, FILE_PREVIEW_MAX_SIZE, \
     FILE_ENCODING_TRY_LIST, USE_PDFJS, MEDIA_URL, SITE_ROOT
 from seahub.views import is_registered_user, check_repo_access_permission, \
-    get_unencry_rw_repos_by_user
+    get_unencry_rw_repos_by_user, get_file_access_permission
 
 # Get an instance of a logger
 logger = logging.getLogger(__name__)
@@ -158,7 +160,7 @@ def get_file_view_path_and_perm(request, repo_id, obj_id, path):
     """ Get path and the permission to view file.
 
     Returns:
-    	outer httpserver file url, inner httpserver file url, permission
+    	outer fileserver file url, inner fileserver file url, permission
     """
     username = request.user.username
     filename = os.path.basename(path)
@@ -430,9 +432,6 @@ def view_file(request, repo_id):
 
     template = 'view_file_%s.html' % ret_dict['filetype'].lower()
 
-    search_repo_id = None
-    if not repo.encrypted:
-        search_repo_id = repo.id
     return render_to_response(template, {
             'repo': repo,
             'is_repo_owner': is_repo_owner,
@@ -466,7 +465,6 @@ def view_file(request, repo_id):
             'user_perm': user_perm,
             'img_prev': img_prev,
             'img_next': img_next,
-            'search_repo_id': search_repo_id,
             'highlight_keyword': settings.HIGHLIGHT_KEYWORD,
             }, context_instance=RequestContext(request))
 
@@ -541,9 +539,6 @@ def view_history_file_common(request, repo_id, ret_dict):
         ret_dict['filetype'] = filetype 
     ret_dict['use_pdfjs'] = USE_PDFJS
 
-    if not repo.encrypted:
-        ret_dict['search_repo_id'] = repo.id
-
 @repo_passwd_set_required
 def view_history_file(request, repo_id):
     ret_dict = {}
@@ -606,6 +601,25 @@ def view_shared_file(request, token):
     if fileshare is None:
         raise Http404
 
+    if fileshare.is_encrypted():
+        if not check_share_link_access(request.user.username, token):
+            d = {'token': token, 'view_name': 'view_shared_file', }
+            if request.method == 'POST':
+                post_values = request.POST.copy()
+                post_values['enc_password'] = fileshare.password
+                form = SharedLinkPasswordForm(post_values)
+                d['form'] = form
+                if form.is_valid():
+                    # set cache for non-anonymous user
+                    if request.user.is_authenticated():
+                        set_share_link_access(request.user.username, token)
+                else:
+                    return render_to_response('share_access_validation.html', d,
+                                              context_instance=RequestContext(request))
+            else:
+                return render_to_response('share_access_validation.html', d,
+                                          context_instance=RequestContext(request))
+    
     shared_by = fileshare.username
     repo_id = fileshare.repo_id
     repo = get_repo(repo_id)
@@ -647,17 +661,17 @@ def view_shared_file(request, token):
         elif filetype == PDF:
             handle_pdf(inner_path, obj_id, fileext, ret_dict)
 
-        # Increase file shared link view_cnt, this operation should be atomic
-        fileshare.view_cnt = F('view_cnt') + 1
-        fileshare.save()
+    # Increase file shared link view_cnt, this operation should be atomic
+    fileshare.view_cnt = F('view_cnt') + 1
+    fileshare.save()
 
-        # send statistic messages
-        if ret_dict['filetype'] != 'Unknown':
-            try:
-                send_message('seahub.stats', 'file-view\t%s\t%s\t%s\t%s' % \
-                             (repo.id, shared_by, obj_id, file_size))
-            except SearpcError, e:
-                logger.error('Error when sending file-view message: %s' % str(e))
+    # send statistic messages
+    if ret_dict['filetype'] != 'Unknown':
+        try:
+            send_message('seahub.stats', 'file-view\t%s\t%s\t%s\t%s' % \
+                         (repo.id, shared_by, obj_id, file_size))
+        except SearpcError, e:
+            logger.error('Error when sending file-view message: %s' % str(e))
 
     accessible_repos = get_unencry_rw_repos_by_user(request)
     save_to_link = reverse('save_shared_link') + '?t=' + token
@@ -686,6 +700,43 @@ def view_shared_file(request, token):
             'save_to_link': save_to_link,
             'traffic_over_limit': traffic_over_limit,
             }, context_instance=RequestContext(request))
+
+def view_raw_shared_file(request, token, obj_id, file_name):
+    """Returns raw content of a shared file.
+    
+    Arguments:
+    - `request`:
+    - `token`:
+    - `obj_id`:
+    - `file_name`:
+    """
+    fileshare = FileShare.objects.get_valid_file_link_by_token(token)
+    if fileshare is None:
+        raise Http404
+
+    repo_id = fileshare.repo_id
+    repo = get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    # Normalize file path based on file or dir share link
+    if fileshare.is_file_share_link():
+        file_path = fileshare.path.rstrip('/')
+    else:
+        file_path = fileshare.path.rstrip('/') + '/' + file_name
+
+    real_obj_id = seafile_api.get_file_id_by_path(repo_id, file_path)
+    if not real_obj_id:
+        raise Http404
+
+    if real_obj_id != obj_id:   # perm check
+        raise Http404
+
+    filename = os.path.basename(file_path)
+    username = request.user.username
+    token = web_get_access_token(repo_id, real_obj_id, 'view', username)
+    outer_url = gen_file_get_url(token, filename)
+    return HttpResponseRedirect(outer_url)
 
 def view_file_via_shared_dir(request, token):
     assert token is not None    # Checked by URLconf
@@ -937,10 +988,6 @@ def file_edit(request, repo_id):
     elif page_from == 'personal_wiki_page_edit' or page_from == 'personal_wiki_page_new':
         cancel_url = reverse('personal_wiki', args=[wiki_name])
 
-    search_repo_id = None
-    if not repo.encrypted:
-        search_repo_id = repo.id
-
     return render_to_response('file_edit.html', {
         'repo':repo,
         'u_filename':u_filename,
@@ -958,8 +1005,120 @@ def file_edit(request, repo_id):
         'from': page_from,
         'gid': gid,
         'cancel_url': cancel_url,
-        'search_repo_id': search_repo_id,
     }, context_instance=RequestContext(request))
+
+@login_required
+def view_raw_file(request, repo_id, file_path):
+    """Returns raw content of a file.
+    
+    Arguments:
+    - `request`:
+    - `repo_id`:
+    """
+    repo = get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    file_path = file_path.rstrip('/')
+    if file_path[0] != '/':
+        file_path = '/' + file_path
+
+    obj_id = get_file_id_by_path(repo_id, file_path)
+    if not obj_id:
+        raise Http404
+
+    raw_path, inner_path, user_perm = get_file_view_path_and_perm(
+        request, repo.id, obj_id, file_path)
+    if user_perm is None:
+        raise Http404
+
+    return HttpResponseRedirect(raw_path)
+
+def send_file_download_msg(request, repo, path, dl_type):
+    """Send file downlaod msg.
+    
+    Arguments:
+    - `request`:
+    - `repo`:
+    - `obj_id`:
+    - `dl_type`: web or api
+    """
+    username = request.user.username
+    ip = get_remote_ip(request)
+    user_agent = request.META.get("HTTP_USER_AGENT")
+
+    msg = 'file-download-%s\t%s\t%s\t%s\t%s\t%s\t%s' % \
+        (dl_type, username, ip, user_agent, repo.id, repo.name, path)
+    msg_utf8 = msg.encode('utf-8')
+
+    try:
+        send_message('seahub.stats', msg_utf8)
+    except Exception as e:
+        logger.error("Error when sending file-download-%s message: %s" %
+                     (dl_type, str(e)))
+
+def download_file(request, repo_id, obj_id):
+    """Download file.
+
+    Arguments:
+    - `request`:
+    - `repo_id`:
+    - `obj_id`:
+    """
+    username = request.user.username
+    repo = get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    if repo.encrypted and not seafile_api.is_password_set(repo_id, username):
+        return HttpResponseRedirect(reverse('repo', args=[repo_id]))
+
+    # If vistor's file shared token in url params matches the token in db,
+    # then we know the vistor is from file shared link.
+    share_token = request.GET.get('t', '')
+    fileshare = FileShare.objects.get(token=share_token) if share_token else None
+    shared_by = None
+    if fileshare:
+        from_shared_link = True
+        shared_by = fileshare.username
+    else:
+        from_shared_link = False
+
+    if from_shared_link:
+        # check whether owner's traffic over the limit
+        if user_traffic_over_limit(fileshare.username):
+            messages.error(request, _(u'Unable to access file: share link traffic is used up.'))
+            next = request.META.get('HTTP_REFERER', settings.SITE_ROOT)
+            return HttpResponseRedirect(next)
+
+    # Permission check and generate download link
+    path = request.GET.get('p', '')
+    if check_repo_access_permission(repo_id, request.user) or \
+            get_file_access_permission(repo_id, path, username) or from_shared_link:
+        # Get a token to access file
+        token = seafserv_rpc.web_get_access_token(repo_id, obj_id, 'download',
+                                                  username)
+    else:
+        messages.error(request, _(u'Unable to download file'))
+        next = request.META.get('HTTP_REFERER', settings.SITE_ROOT)
+        return HttpResponseRedirect(next)
+
+    # send stats message
+    if from_shared_link:
+        try:
+            file_size = seafile_api.get_file_size(repo.store_id, repo.version,
+                                                  obj_id)
+            send_message('seahub.stats', 'file-download\t%s\t%s\t%s\t%s' %
+                         (repo.id, shared_by, obj_id, file_size))
+        except Exception, e:
+            logger.error('Error when sending file-download message: %s' % str(e))
+    else:
+        # send stats message
+        send_file_download_msg(request, repo, path, 'web')
+
+    file_name = os.path.basename(path.rstrip('/'))
+    redirect_url = gen_file_get_url(token, file_name)
+    return HttpResponseRedirect(redirect_url)
 
 ########## text diff
 def get_file_content_by_commit_and_path(request, repo_id, commit_id, path, file_enc):
@@ -988,7 +1147,7 @@ def get_file_content_by_commit_and_path(request, repo_id, commit_id, path, file_
         try:
             err, file_content, encoding = repo_file_get(inner_path, file_enc)
         except Exception, e:
-            return None, 'error when read file from httpserver: %s' % e
+            return None, 'error when read file from fileserver: %s' % e
         return file_content, err
 
 @login_required    
@@ -1038,10 +1197,6 @@ def text_diff(request, repo_id):
 
     zipped = gen_path_link(path, repo.name)
 
-    search_repo_id = None
-    if not repo.encrypted:
-        search_repo_id = repo.id
-    
     return render_to_response('text_diff.html', {
         'u_filename':u_filename,
         'repo': repo,
@@ -1051,7 +1206,6 @@ def text_diff(request, repo_id):
         'prev_commit': prev_commit,
         'diff_result_table': diff_result_table,
         'is_new_file': is_new_file,
-        'search_repo_id': search_repo_id,
     }, context_instance=RequestContext(request))
 
 ########## office related
@@ -1138,7 +1292,7 @@ def view_priv_shared_file(request, token):
     filename = os.path.basename(path)
     filetype, fileext = get_file_type_and_ext(filename)
     
-    access_token = seafile_api.get_httpserver_access_token(repo.id, obj_id,
+    access_token = seafile_api.get_fileserver_access_token(repo.id, obj_id,
                                                            'view', username)
     raw_path = gen_file_get_url(access_token, filename)
     inner_path = gen_inner_file_get_url(access_token, filename)

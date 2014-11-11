@@ -1,7 +1,8 @@
 # encoding: utf-8
 import os
 import logging
-import simplejson as json
+import json
+from dateutil.relativedelta import relativedelta
 
 from django.core.urlresolvers import reverse
 from django.db import IntegrityError
@@ -12,6 +13,7 @@ from django.template import RequestContext
 from django.utils.translation import ugettext as _
 from django.views.decorators.http import require_POST
 from django.contrib import messages
+from django.utils import timezone
 from django.utils.html import escape
 # from django.contrib.sites.models import RequestSite
 import seaserv
@@ -27,13 +29,13 @@ from seahub.share.models import FileShare, PrivateFileDirShare, \
 from seahub.share.signals import share_repo_to_user_successful
 # from settings import ANONYMOUS_SHARE_COOKIE_TIMEOUT
 # from tokens import anon_share_token_generator
-from seahub.auth.decorators import login_required
+from seahub.auth.decorators import login_required, login_required_ajax
 from seahub.base.accounts import User
 from seahub.base.decorators import user_mods_check
 from seahub.contacts.models import Contact
 from seahub.contacts.signals import mail_sended
 from seahub.signals import share_file_to_user_successful
-from seahub.views import is_registered_user
+from seahub.views import is_registered_user, check_repo_access_permission
 from seahub.utils import render_permission_error, string2list, render_error, \
     gen_token, gen_shared_link, gen_shared_upload_link, gen_dir_share_link, \
     gen_file_share_link, IS_EMAIL_CONFIGURED, check_filename_with_rename, \
@@ -122,7 +124,7 @@ def share_to_group(request, repo, group, permission):
             {'repo': repo.name, 'group': group_name}
         messages.error(request, msg)
     else:
-        msg = _(u'Shared to %(group)s successfully，go check it at <a href="%(share)s">Shares</a>.') % \
+        msg = _(u'Shared to %(group)s successfully, go check it at <a href="%(share)s">Shares</a>.') % \
             {'group': group_name, 'share': reverse('share_admin')}
         messages.success(request, msg)
 
@@ -542,7 +544,7 @@ def view_priv_shared_folder(request, repo_id):
     url = reverse('repo', args=[repo.origin_repo_id]) + '?p=' + repo.origin_path
     return HttpResponseRedirect(url)
 
-@login_required
+@login_required_ajax
 def share_permission_admin(request):
     """Change repo share permission in ShareAdmin.
     """
@@ -692,19 +694,27 @@ def share_permission_admin(request):
 #     return HttpResponseRedirect(next)
 
 ########## share link
-@login_required
+@login_required_ajax
 def get_shared_link(request):
     """
     Handle ajax request to generate file or dir shared link.
     """
-    if not request.is_ajax():
-        raise Http404
-
     content_type = 'application/json; charset=utf-8'
 
     repo_id = request.GET.get('repo_id', '')
     share_type = request.GET.get('type', 'f')  # `f` or `d`
     path = request.GET.get('p', '')
+    use_passwd = True if int(request.POST.get('use_passwd', '0')) == 1 else False
+    passwd = request.POST.get('passwd') if use_passwd else None
+
+    try:
+        expire_days = int(request.POST.get('expire_days', 0))
+    except ValueError:
+        expire_days = 0
+    if expire_days <= 0:
+        expire_date = None
+    else:
+        expire_date = timezone.now() + relativedelta(days=expire_days)
 
     if not (repo_id and path):
         err = _('Invalid arguments')
@@ -720,14 +730,16 @@ def get_shared_link(request):
     if share_type == 'f':
         fs = FileShare.objects.get_file_link_by_path(username, repo_id, path)
         if fs is None:
-            fs = FileShare.objects.create_file_link(username, repo_id, path)
+            fs = FileShare.objects.create_file_link(username, repo_id, path,
+                                                    passwd, expire_date)
             if is_org_context(request):
                 org_id = request.user.org.org_id
                 OrgFileShare.objects.set_org_file_share(org_id, fs)
     else:
         fs = FileShare.objects.get_dir_link_by_path(username, repo_id, path)
         if fs is None:
-            fs = FileShare.objects.create_dir_link(username, repo_id, path)
+            fs = FileShare.objects.create_dir_link(username, repo_id, path,
+                                                   passwd, expire_date)
             if is_org_context(request):
                 org_id = request.user.org.org_id
                 OrgFileShare.objects.set_org_file_share(org_id, fs)
@@ -744,18 +756,23 @@ def remove_shared_link(request):
     """
     token = request.GET.get('t')
 
-    if not request.is_ajax():
-        FileShare.objects.filter(token=token).delete()
-        next = request.META.get('HTTP_REFERER', None)
-        if not next:
-            next = reverse('share_admin')
+    FileShare.objects.filter(token=token).delete()
+    next = request.META.get('HTTP_REFERER', None)
+    if not next:
+        next = reverse('share_admin')
 
-        messages.success(request, _(u'Removed successfully'))
+    messages.success(request, _(u'Removed successfully'))
 
-        return HttpResponseRedirect(next)
+    return HttpResponseRedirect(next)
+
+
+@login_required_ajax
+def ajax_remove_shared_link(request):
 
     content_type = 'application/json; charset=utf-8'
     result = {}
+
+    token = request.GET.get('t')
 
     if not token:
         result = {'error': _(u"Argument missing")}
@@ -770,6 +787,7 @@ def remove_shared_link(request):
         result = {'error': _(u"The link doesn't exist")}
         return HttpResponse(json.dumps(result), status=400, content_type=content_type)
 
+
 @login_required
 def remove_shared_upload_link(request):
     """
@@ -777,19 +795,23 @@ def remove_shared_upload_link(request):
     """
     token = request.GET.get('t')
 
-    if not request.is_ajax():
-        UploadLinkShare.objects.filter(token=token).delete()
-        next = request.META.get('HTTP_REFERER', None)
-        if not next:
-            next = reverse('share_admin')
+    UploadLinkShare.objects.filter(token=token).delete()
+    next = request.META.get('HTTP_REFERER', None)
+    if not next:
+        next = reverse('share_admin')
 
-        messages.success(request, _(u'Removed successfully'))
+    messages.success(request, _(u'Removed successfully'))
 
-        return HttpResponseRedirect(next)
+    return HttpResponseRedirect(next)
+
+
+@login_required_ajax
+def ajax_remove_shared_upload_link(request):
 
     content_type = 'application/json; charset=utf-8'
     result = {}
 
+    token = request.GET.get('t')
     if not token:
         result = {'error': _(u"Argument missing")}
         return HttpResponse(json.dumps(result), status=400, content_type=content_type)
@@ -803,12 +825,13 @@ def remove_shared_upload_link(request):
         result = {'error': _(u"The link doesn't exist")}
         return HttpResponse(json.dumps(result), status=400, content_type=content_type)
 
-@login_required
+
+@login_required_ajax
 def send_shared_link(request):
     """
     Handle ajax post request to send file shared link.
     """
-    if not request.is_ajax() and not request.method == 'POST':
+    if not request.method == 'POST':
         raise Http404
 
     content_type = 'application/json; charset=utf-8'
@@ -1035,17 +1058,17 @@ def user_share_list(request, id_or_email):
             'add_to_contacts': add_to_contacts,
             }, context_instance=RequestContext(request))
 
-@login_required
+@login_required_ajax
 def get_shared_upload_link(request):
     """
     Handle ajax request to generate dir upload link.
     """
-    if not request.is_ajax():
-        raise Http404
     content_type = 'application/json; charset=utf-8'
 
     repo_id = request.GET.get('repo_id', '')
     path = request.GET.get('p', '')
+    use_passwd = True if int(request.POST.get('use_passwd', '0')) == 1 else False
+    passwd = request.POST.get('passwd') if use_passwd else None
 
     if not (repo_id and path):
         err = _('Invalid arguments')
@@ -1059,38 +1082,40 @@ def get_shared_upload_link(request):
     else:
         if path[-1] != '/': # append '/' at end of path
             path += '/'
-    l = UploadLinkShare.objects.filter(repo_id=repo_id).filter(
-        username=request.user.username).filter(path=path)
-    if len(l) > 0:
-        upload_link = l[0]
-        token = upload_link.token
+
+    repo = seaserv.get_repo(repo_id)
+    user_perm = check_repo_access_permission(repo.id, request.user)
+
+    if user_perm == 'r':
+        messages.error(request, _(u'Permission denied'))
+        return HttpResponse(status=403, content_type=content_type)
+    elif user_perm == 'rw':
+        l = UploadLinkShare.objects.filter(repo_id=repo_id).filter(
+            username=request.user.username).filter(path=path)
+        if len(l) > 0:
+            upload_link = l[0]
+            token = upload_link.token
+        else:
+            username = request.user.username
+            uls = UploadLinkShare.objects.create_upload_link_share(
+                username, repo_id, path, passwd)
+            token = uls.token
+
+        shared_upload_link = gen_shared_upload_link(token)
+
+        data = json.dumps({'token': token, 'shared_upload_link': shared_upload_link})
+        return HttpResponse(data, status=200, content_type=content_type)
     else:
-        token = gen_token(max_length=10)
+        messages.error(request, _(u'Operation failed'))
+        return HttpResponse(json.dumps(), status=500, content_type=content_type)
 
-        upload_link = UploadLinkShare()
-        upload_link.username = request.user.username
-        upload_link.repo_id = repo_id
-        upload_link.path = path
-        upload_link.token = token
 
-        try:
-            upload_link.save()
-        except IntegrityError, e:
-            err = _('Failed to get the link, please retry later.')
-            data = json.dumps({'error': err})
-            return HttpResponse(data, status=500, content_type=content_type)
-
-    shared_upload_link = gen_shared_upload_link(token)
-
-    data = json.dumps({'token': token, 'shared_upload_link': shared_upload_link})
-    return HttpResponse(data, status=200, content_type=content_type)
-
-@login_required
+@login_required_ajax
 def send_shared_upload_link(request):
     """
     Handle ajax post request to send shared upload link.
     """
-    if not request.is_ajax() and not request.method == 'POST':
+    if not request.method == 'POST':
         raise Http404
 
     content_type = 'application/json; charset=utf-8'

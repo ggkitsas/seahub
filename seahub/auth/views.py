@@ -24,6 +24,9 @@ from seahub.auth.forms import PasswordResetForm, SetPasswordForm, PasswordChange
 from seahub.auth.tokens import default_token_generator
 from seahub.base.accounts import User
 from seahub.utils import is_ldap_user
+from seahub.utils.ip import get_remote_ip
+from seahub.settings import USER_PASSWORD_MIN_LENGTH, \
+    USER_STRONG_PASSWORD_REQUIRED, USER_PASSWORD_STRENGTH_LEVEL
 
 # Get an instance of a logger
 logger = logging.getLogger(__name__)
@@ -34,9 +37,9 @@ def log_user_in(request, user, redirect_to):
     # Light security check -- make sure redirect_to isn't garbage.
     if not redirect_to or ' ' in redirect_to:
         redirect_to = settings.LOGIN_REDIRECT_URL
-            
-    # Heavier security check -- redirects to http://example.com should 
-    # not be allowed, but things like /view/?param=http://example.com 
+
+    # Heavier security check -- redirects to http://example.com should
+    # not be allowed, but things like /view/?param=http://example.com
     # should be allowed. This regex checks if there is a '//' *before* a
     # question mark.
     elif '//' in redirect_to and re.match(r'[^\?]*//', redirect_to):
@@ -48,10 +51,69 @@ def log_user_in(request, user, redirect_to):
     if request.session.test_cookie_worked():
         request.session.delete_test_cookie()
 
-    cache.delete(LOGIN_ATTEMPT_PREFIX+user.username)
+    _clear_login_failed_attempts(request)
 
     return HttpResponseRedirect(redirect_to)
-    
+
+def _get_login_failed_attempts(username=None, ip=None):
+    """Get login failed attempts base on username and ip.
+    If both username and ip are provided, return the max value.
+
+    Arguments:
+    - `username`:
+    - `ip`:
+    """
+    if username is None and ip is None:
+        return 0
+
+    username_attempts = ip_attempts = 0
+
+    if username:
+        username_attempts = cache.get(LOGIN_ATTEMPT_PREFIX + username, 0)
+
+    if ip:
+        ip_attempts = cache.get(LOGIN_ATTEMPT_PREFIX + ip, 0)
+
+    return max(username_attempts, ip_attempts)
+
+def _incr_login_faied_attempts(username=None, ip=None):
+    """Increase login failed attempts by 1 for both username and ip.
+
+    Arguments:
+    - `username`:
+    - `ip`:
+
+    Returns new value of failed attempts.
+    """
+    timeout = settings.LOGIN_ATTEMPT_TIMEOUT
+    username_attempts = 0
+    ip_attempts = 0
+
+    if username:
+        try:
+            username_attempts = cache.incr(LOGIN_ATTEMPT_PREFIX + username)
+        except ValueError:
+            cache.set(LOGIN_ATTEMPT_PREFIX + username, 0, timeout)
+
+    if ip:
+        try:
+            ip_attempts = cache.incr(LOGIN_ATTEMPT_PREFIX + ip)
+        except ValueError:
+            cache.set(LOGIN_ATTEMPT_PREFIX + ip, 0, timeout)
+
+    return max(username_attempts, ip_attempts)
+
+def _clear_login_failed_attempts(request):
+    """Clear login failed attempts records.
+
+    Arguments:
+    - `request`:
+    """
+    username = request.user.username
+    ip = get_remote_ip(request)
+    cache.delete(LOGIN_ATTEMPT_PREFIX + username)
+    cache.delete(LOGIN_ATTEMPT_PREFIX + ip)
+
 @csrf_protect
 @never_cache
 def login(request, template_name='registration/login.html',
@@ -64,6 +126,7 @@ def login(request, template_name='registration/login.html',
         return HttpResponseRedirect(reverse(redirect_if_logged_in))
 
     redirect_to = request.REQUEST.get(redirect_field_name, '')
+    ip = get_remote_ip(request)
 
     if request.method == "POST":
         if request.REQUEST.get('captcha_0', '') != '':
@@ -75,8 +138,9 @@ def login(request, template_name='registration/login.html',
                     'remember_me', '') == 'on' else False
                 request.session['remember_me'] = remember_me
                 return log_user_in(request, form.get_user(), redirect_to)
-            # else:
-            # show page with captcha
+            else:
+                # show page with captcha and increase failed login attempts
+                _incr_login_faied_attempts(ip=ip)
         else:
             form = authentication_form(data=request.POST)
             if form.is_valid():
@@ -87,20 +151,27 @@ def login(request, template_name='registration/login.html',
                 return log_user_in(request, form.get_user(), redirect_to)
             else:
                 username = urlquote(request.REQUEST.get('username', '').strip())
-                failed_attempt = cache.get(LOGIN_ATTEMPT_PREFIX+username, 1)
+                failed_attempt = _incr_login_faied_attempts(username=username,
+                                                            ip=ip)
+
                 if failed_attempt >= settings.LOGIN_ATTEMPT_LIMIT:
+                    logger.warn('Login attempt limit reached, username: %s, ip: %s, attemps: %d' %
+                                (username, ip, failed_attempt))
                     form = CaptchaAuthenticationForm()
                 else:
-                    failed_attempt += 1
-                    cache.set(LOGIN_ATTEMPT_PREFIX+username, failed_attempt,
-                              settings.LOGIN_ATTEMPT_TIMEOUT)
                     form = authentication_form(data=request.POST)
     else:
         ### GET
-        form = authentication_form(request)
-    
+        failed_attempt = _get_login_failed_attempts(ip=ip)
+        if failed_attempt >= settings.LOGIN_ATTEMPT_LIMIT:
+            logger.warn('Login attempt limit reached, ip: %s, attempts: %d' %
+                        (ip, failed_attempt))
+            form = CaptchaAuthenticationForm(request)
+        else:
+            form = authentication_form(request)
+
     request.session.set_test_cookie()
-    
+
     if Site._meta.installed:
         current_site = Site.objects.get_current()
     else:
@@ -144,7 +215,7 @@ def login_simple_check(request):
             user = User.objects.get(email=username)
         except User.DoesNotExist:
             raise Http404
-        
+
         for backend in get_backends():
             user.backend = "%s.%s" % (backend.__module__, backend.__class__.__name__)
 
@@ -154,7 +225,7 @@ def login_simple_check(request):
     else:
         raise Http404
 
-    
+
 def logout(request, next_page=None, template_name='registration/logged_out.html', redirect_field_name=REDIRECT_FIELD_NAME):
     "Logs out the user and displays 'You are logged out' message."
     from seahub.auth import logout
@@ -186,7 +257,7 @@ def redirect_to_login(next, login_url=None, redirect_field_name=REDIRECT_FIELD_N
 # 4 views for password reset:
 # - password_reset sends the mail
 # - password_reset_done shows a success message for the above
-# - password_reset_confirm checks the link the user clicked and 
+# - password_reset_confirm checks the link the user clicked and
 #   prompts for a new password
 # - password_reset_complete shows a success message for the above
 
@@ -283,8 +354,12 @@ def password_change(request, template_name='registration/password_change_form.ht
             return HttpResponseRedirect(post_change_redirect)
     else:
         form = password_change_form(user=request.user)
+
     return render_to_response(template_name, {
         'form': form,
+        'min_len': USER_PASSWORD_MIN_LENGTH,
+        'strong_pwd_required': USER_STRONG_PASSWORD_REQUIRED,
+        'level': USER_PASSWORD_STRENGTH_LEVEL,
     }, context_instance=RequestContext(request))
 
 def password_change_done(request, template_name='registration/password_change_done.html'):

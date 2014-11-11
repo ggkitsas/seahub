@@ -2,23 +2,20 @@
 import hashlib
 import os
 import stat
-import simplejson as json
+import json
 import mimetypes
 import urllib2
 import logging
 from math import ceil
-from urllib import quote
 import posixpath
 
 from django.core.cache import cache
 from django.core.urlresolvers import reverse
 from django.contrib import messages
-from django.db.models import F
 from django.http import HttpResponse, HttpResponseBadRequest, Http404, \
     HttpResponseRedirect
 from django.shortcuts import render_to_response, redirect
 from django.template import RequestContext
-from django.template.loader import render_to_string
 from django.utils.translation import ugettext as _
 from django.utils import timezone
 from django.utils.http import urlquote
@@ -29,31 +26,25 @@ from seaserv import get_repo, get_commits, is_valid_filename, \
     seafserv_threaded_rpc, seafserv_rpc, is_repo_owner, check_permission, \
     is_passwd_set, get_file_size, edit_repo, \
     get_session_info, set_repo_history_limit, get_commit, \
-    MAX_DOWNLOAD_DIR_SIZE, send_message, MAX_UPLOAD_FILE_SIZE
+    MAX_DOWNLOAD_DIR_SIZE, send_message, ccnet_threaded_rpc
 from seaserv import seafile_api
 from pysearpc import SearpcError
 
 from seahub.avatar.util import get_avatar_file_storage
-from seahub.auth.decorators import login_required
+from seahub.auth.decorators import login_required, login_required_ajax
 from seahub.auth import login as auth_login
-from seahub.auth import authenticate, get_backends
+from seahub.auth import get_backends
 from seahub.base.accounts import User
-from seahub.base.decorators import sys_staff_required, user_mods_check
-from seahub.base.models import UuidObjidMap, InnerPubMsg, InnerPubMsgReply, \
-    UserStarredFiles, DirFilesLastModifiedInfo
+from seahub.base.decorators import user_mods_check
+from seahub.base.models import UserStarredFiles, DirFilesLastModifiedInfo
 from seahub.contacts.models import Contact
-from seahub.contacts.signals import mail_sended
-from seahub.group.forms import MessageForm, MessageReplyForm
-from seahub.group.models import GroupMessage, MessageAttachment
-from seahub.group.signals import grpmsg_added
-from seahub.notifications.models import UserNotification
 from seahub.options.models import UserOptions, CryptoOptionNotSetError
 from seahub.profile.models import Profile
-from seahub.share.models import FileShare, PrivateFileDirShare, UploadLinkShare
+from seahub.share.models import FileShare, PrivateFileDirShare, \
+    UploadLinkShare
 from seahub.forms import RepoPassowrdForm, RepoSettingForm
-from seahub.signals import repo_created, repo_deleted
 from seahub.utils import render_permission_error, render_error, list_to_string, \
-    get_httpserver_root, gen_shared_upload_link, \
+    get_fileserver_root, gen_shared_upload_link, \
     gen_dir_share_link, gen_file_share_link, get_repo_last_modify, \
     calculate_repos_last_modify, get_file_type_and_ext, get_user_repos, \
     EMPTY_SHA1, normalize_file_path, is_valid_username, \
@@ -77,16 +68,10 @@ from seahub.settings import FILE_PREVIEW_MAX_SIZE, INIT_PASSWD, USE_PDFJS, \
 # Get an instance of a logger
 logger = logging.getLogger(__name__)
 
-def root(request):
-    if request.user.is_authenticated():
-        return HttpResponseRedirect(reverse(myhome))
-    else:
-        return HttpResponseRedirect(settings.LOGIN_URL)
-
 def validate_owner(request, repo_id):
     """
     Check whether user in the request owns the repo.
-    
+
     """
     ret = is_repo_owner(request.user.username, repo_id)
 
@@ -104,30 +89,6 @@ def is_registered_user(email):
 
     return True if user else False
 
-def access_to_repo(request, repo_id, repo_ap=None):
-    """
-    Check whether user in the request can access to repo, which means user can
-    view directory entries on repo page. Only repo owner or person who is shared
-    can access to repo.
-
-    NOTE: This function is deprecated, use `get_user_permission`.
-    """
-    if not request.user.is_authenticated():
-        token = request.COOKIES.get('anontoken', None)
-        return True if token else False
-    else:
-        return True if check_permission(repo_id, request.user.username) else False
-
-def get_user_permission(request, repo_id):
-    """
-    NOTE: This function is deprecated, use `check_repo_access_permission`.
-    """
-    if request.user.is_authenticated():
-        return check_permission(repo_id, request.user.username)
-    else:
-        token = request.COOKIES.get('anontoken', None)
-        return 'r' if token else ''
-
 def get_system_default_repo_id():
     try:
         return seaserv.seafserv_threaded_rpc.get_system_default_repo_id()
@@ -138,7 +99,7 @@ def get_system_default_repo_id():
 def check_repo_access_permission(repo_id, user):
     """Check repo access permission of a user, always return 'rw' when repo is
     system repo and user is admin.
-    
+
     Arguments:
     - `repo_id`:
     - `user`:
@@ -147,13 +108,13 @@ def check_repo_access_permission(repo_id, user):
         return 'rw'
     else:
         return seafile_api.check_repo_access_permission(repo_id, user.username)
-    
+
 def get_file_access_permission(repo_id, path, username):
     """Check user has permission to view the file.
     1. check whether this file is private shared.
     2. if failed, check whether the parent of this directory is private shared.
     """
-     
+
     pfs = PrivateFileDirShare.objects.get_private_share_in_file(username,
                                                                repo_id, path)
     if pfs is None:
@@ -164,11 +125,11 @@ def get_file_access_permission(repo_id, path, username):
         return None
     else:
         return pfs.permission
-    
+
 def gen_path_link(path, repo_name):
     """
     Generate navigate paths and links in repo page.
-    
+
     """
     if path and path[-1] != '/':
         path += '/'
@@ -185,10 +146,21 @@ def gen_path_link(path, repo_name):
     if repo_name:
         paths.insert(0, repo_name)
         links.insert(0, '/')
-        
+
     zipped = zip(paths, links)
-    
+
     return zipped
+
+def get_file_download_link(repo_id, obj_id, path):
+    """Generate file download link.
+    
+    Arguments:
+    - `repo_id`:
+    - `obj_id`:
+    - `filename`:
+    """
+    return reverse('download_file', args=[repo_id, obj_id]) + '?p=' + \
+        urlquote(path)
 
 def get_repo_dirents(request, repo, commit, path, offset=-1, limit=-1):
     dir_list = []
@@ -257,8 +229,8 @@ def get_repo_dirents(request, repo, commit, path, offset=-1, limit=-1):
                 fpath = os.path.join(path, dirent.obj_name)
                 p_fpath = posixpath.join(path, dirent.obj_name)
                 dirent.view_link = view_file_base + '?p=' + urlquote(p_fpath)
-                dirent.dl_link = '%srepo/%s/%s/?file_name=%s&op=download' % \
-                    (settings.SITE_ROOT, repo.id, dirent.obj_id, urlquote(dirent.obj_name))
+                dirent.dl_link = get_file_download_link(repo.id, dirent.obj_id,
+                                                        p_fpath)
                 dirent.history_link = file_history_base + '?p=' + urlquote(p_fpath)
                 if fpath in starred_files:
                     dirent.starred = True
@@ -330,9 +302,16 @@ def render_recycle_root(request, repo_id):
     file_list.sort(lambda x, y : cmp(y.delete_time,
                                      x.delete_time))
 
-    search_repo_id = None
-    if not repo.encrypted:
-        search_repo_id = repo.id
+    username = request.user.username
+    if is_org_context(request):
+        repo_owner = seafile_api.get_org_repo_owner(repo.id)
+    else:
+        repo_owner = seafile_api.get_repo_owner(repo.id)
+    is_repo_owner = True if repo_owner == username else False
+
+    enable_clean = False
+    if is_repo_owner:
+        enable_clean = True
 
     return render_to_response('repo_recycle_view.html', {
             'show_recycle_root': True,
@@ -340,7 +319,7 @@ def render_recycle_root(request, repo_id):
             'dir_list': dir_list,
             'file_list': file_list,
             'days': days,
-            'search_repo_id': search_repo_id,
+            'enable_clean': enable_clean,
             }, context_instance=RequestContext(request))
 
 def render_recycle_dir(request, repo_id, commit_id):
@@ -367,9 +346,16 @@ def render_recycle_dir(request, repo_id, commit_id):
 
     days = show_delete_days(request)
 
-    search_repo_id = None
-    if not repo.encrypted:
-        search_repo_id = repo.id
+    username = request.user.username
+    if is_org_context(request):
+        repo_owner = seafile_api.get_org_repo_owner(repo.id)
+    else:
+        repo_owner = seafile_api.get_repo_owner(repo.id)
+    is_repo_owner = True if repo_owner == username else False
+
+    enable_clean = False
+    if is_repo_owner:
+        enable_clean = True
 
     return render_to_response('repo_recycle_view.html', {
             'show_recycle_root': False,
@@ -381,7 +367,7 @@ def render_recycle_dir(request, repo_id, commit_id):
             'basedir': basedir,
             'path': path,
             'days': days,
-            'search_repo_id': search_repo_id,
+            'enable_clean': enable_clean,
             }, context_instance=RequestContext(request))
 
 @login_required
@@ -394,6 +380,37 @@ def repo_recycle_view(request, repo_id):
         return render_recycle_root(request, repo_id)
     else:
         return render_recycle_dir(request, repo_id, commit_id)
+
+@login_required
+def repo_online_gc(request, repo_id):
+    if request.method != 'POST':
+        raise Http404
+
+    repo = get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    referer = request.META.get('HTTP_REFERER', None)
+    next = settings.SITE_ROOT if referer is None else referer
+
+    username = request.user.username
+    if is_org_context(request):
+        repo_owner = seafile_api.get_org_repo_owner(repo.id)
+    else:
+        repo_owner = seafile_api.get_repo_owner(repo.id)
+    is_repo_owner = True if repo_owner == username else False
+    if not is_repo_owner:
+        messages.error(request, _('Permission denied'))
+        return HttpResponseRedirect(next)
+
+    day = int(request.POST.get('day'))
+    try:
+        seafile_api.clean_up_repo_history(repo.id, day)
+    except SearpcError, e:
+        messages.error(request, _('Internal server error'))
+        return HttpResponseRedirect(next)
+
+    return HttpResponseRedirect(next)
 
 @login_required
 def repo_settings(request, repo_id):
@@ -418,39 +435,6 @@ def repo_settings(request, repo_id):
     if not is_owner:
         raise Http404
 
-    if request.method == 'POST':
-        content_type = 'application/json; charset=utf-8'
-
-        form = RepoSettingForm(request.POST)
-        if not form.is_valid():
-            return HttpResponse(json.dumps({
-                        'error': str(form.errors.values()[0])
-                        }), status=400, content_type=content_type)
-
-        repo_name = form.cleaned_data['repo_name']
-        repo_desc = form.cleaned_data['repo_desc']
-        days = form.cleaned_data['days']
-
-        # Edit library info (name, descryption).
-        if repo.name != repo_name or repo.desc != repo_desc:
-            if not edit_repo(repo_id, repo_name, repo_desc, username):
-                err_msg = _(u'Failed to edit library information.')
-                return HttpResponse(json.dumps({'error': err_msg}),
-                                    status=500, content_type=content_type)
-
-        # set library history
-        if days is not None and ENABLE_REPO_HISTORY_SETTING:
-            res = set_repo_history_limit(repo_id, days)
-            if res != 0:
-                return HttpResponse(json.dumps({
-                            'error': _(u'Failed to save settings on server')
-                            }), status=400, content_type=content_type)
-
-        messages.success(request, _(u'Settings saved.'))
-        return HttpResponse(json.dumps({'success': True}),
-                            content_type=content_type)
-
-    ### handle get request
     history_limit = seaserv.get_repo_history_limit(repo.id)
     full_history_checked = no_history_checked = partial_history_checked = False
     if history_limit > 0:
@@ -469,49 +453,6 @@ def repo_settings(request, repo_id):
     if history_limit <= 0:
         days_enabled = False
 
-    repo_shared_links = []
-    # download links
-    fileshares = FileShare.objects.filter(repo_id=repo_id)
-    for fs in fileshares:
-        if fs.is_file_share_link():
-            if seafile_api.get_file_id_by_path(repo.id, fs.path) is None:
-                fs.delete()
-                continue
-            fs.filename = os.path.basename(fs.path)
-            fs.shared_link = gen_file_share_link(fs.token)
-
-            path = fs.path.rstrip('/')  # Normalize file path
-            obj_id = seafile_api.get_file_id_by_path(repo.id, path)
-            fs.size = seafile_api.get_file_size(repo.store_id, repo.version,
-                                                obj_id)
-            repo_shared_links.append(fs)
-        else:
-            if seafile_api.get_dir_id_by_path(repo.id, fs.path) is None:
-                fs.delete()
-                continue
-            fs.filename = os.path.basename(fs.path.rstrip('/'))
-            fs.shared_link = gen_dir_share_link(fs.token)
-
-            path = fs.path
-            if path[-1] != '/':         # Normalize dir path
-                path += '/'
-            #get dir size
-            dir_id = seafserv_threaded_rpc.get_dirid_by_path(
-                repo.id, repo.head_cmmt_id, path)
-            fs.size = seafserv_threaded_rpc.get_dir_size(repo.store_id,
-                                                         repo.version, dir_id)
-            repo_shared_links.insert(0, fs)
-
-    # upload links
-    uploadlinks = UploadLinkShare.objects.filter(repo_id=repo_id)
-    for link in uploadlinks:
-        if seafile_api.get_dir_id_by_path(repo.id, link.path) is None:
-            link.delete()
-            continue
-        link.dir_name = os.path.basename(link.path.rstrip('/'))
-        link.shared_link = gen_shared_upload_link(link.token)
-        repo_shared_links.insert(0, link)
-
     return render_to_response('repo_settings.html', {
             'repo': repo,
             'repo_owner': repo_owner,
@@ -524,11 +465,66 @@ def repo_settings(request, repo_id):
             'partial_history_enabled': partial_history_enabled,
             'days_enabled': days_enabled,
             'repo_password_min_length': REPO_PASSWORD_MIN_LENGTH,
-            'repo_shared_links': repo_shared_links,
             }, context_instance=RequestContext(request))
 
-@login_required
-def repo_owner(request, repo_id):
+@login_required_ajax
+def repo_change_basic_info(request, repo_id):
+    """Handle post request to change library basic info.
+    """
+    if request.method != 'POST':
+        raise Http404
+
+    content_type = 'application/json; charset=utf-8'
+    username = request.user.username
+
+    repo = seafile_api.get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    # no settings for virtual repo
+    if ENABLE_SUB_LIBRARY and repo.is_virtual:
+        raise Http404
+
+    # check permission
+    if is_org_context(request):
+        repo_owner = seafile_api.get_org_repo_owner(repo.id)
+    else:
+        repo_owner = seafile_api.get_repo_owner(repo.id)
+    is_owner = True if username == repo_owner else False
+    if not is_owner:
+        raise Http404
+
+    form = RepoSettingForm(request.POST)
+    if not form.is_valid():
+        return HttpResponse(json.dumps({
+                    'error': str(form.errors.values()[0])
+                    }), status=400, content_type=content_type)
+
+    repo_name = form.cleaned_data['repo_name']
+    repo_desc = form.cleaned_data['repo_desc']
+    days = form.cleaned_data['days']
+
+    # Edit library info (name, descryption).
+    if repo.name != repo_name or repo.desc != repo_desc:
+        if not edit_repo(repo_id, repo_name, repo_desc, username):
+            err_msg = _(u'Failed to edit library information.')
+            return HttpResponse(json.dumps({'error': err_msg}),
+                                status=500, content_type=content_type)
+
+    # set library history
+    if days is not None and ENABLE_REPO_HISTORY_SETTING:
+        res = set_repo_history_limit(repo_id, days)
+        if res != 0:
+            return HttpResponse(json.dumps({
+                        'error': _(u'Failed to save settings on server')
+                        }), status=400, content_type=content_type)
+
+    messages.success(request, _(u'Settings saved.'))
+    return HttpResponse(json.dumps({'success': True}),
+                        content_type=content_type)
+
+@login_required_ajax
+def repo_transfer_owner(request, repo_id):
     """Handle post request to transfer library owner.
     """
     if request.method != 'POST':
@@ -576,7 +572,12 @@ def repo_owner(request, repo_id):
             org_id = request.user.org.org_id
             seafile_api.set_org_repo_owner(org_id, repo_id, repo_owner)
         else:
-            seafile_api.set_repo_owner(repo_id, repo_owner)
+            if ccnet_threaded_rpc.get_orgs_by_user(repo_owner):
+                return HttpResponse(json.dumps({
+                       'error': _('Can not transfer library to organization user %s.') % repo_owner,
+                       }), status=400, content_type=content_type)
+            else:
+                seafile_api.set_repo_owner(repo_id, repo_owner)
 
     messages.success(request,
                      _(u'Library %(repo_name)s has been transfered to %(new_owner)s.') %
@@ -584,7 +585,7 @@ def repo_owner(request, repo_id):
     return HttpResponse(json.dumps({'success': True}),
                         content_type=content_type)
 
-@login_required
+@login_required_ajax
 def repo_change_passwd(request, repo_id):
     """Handle ajax post request to change library password.
     """
@@ -622,7 +623,7 @@ def repo_change_passwd(request, repo_id):
                      {'repo_name': repo.name})
     return HttpResponse(json.dumps({'success': True}),
                         content_type=content_type)
-    
+
 def upload_error_msg (code):
     err_msg = _(u'Internal Server Error')
     if (code == 0):
@@ -682,7 +683,7 @@ def update_file_error(request, repo_id):
                 'zipped': zipped,
                 'err_msg': err_msg,
                 }, context_instance=RequestContext(request))
-    
+
 @login_required
 def repo_history(request, repo_id):
     """
@@ -701,8 +702,8 @@ def repo_history(request, repo_id):
         server_crypto = UserOptions.objects.is_server_crypto(username)
     except CryptoOptionNotSetError:
         # Assume server_crypto is ``False`` if this option is not set.
-        server_crypto = False   
-    
+        server_crypto = False
+
     password_set = False
     if repo.props.encrypted and \
             (repo.enc_version == 1 or (repo.enc_version == 2 and server_crypto)):
@@ -734,11 +735,6 @@ def repo_history(request, repo_id):
     else:
         page_next = False
 
-        
-    search_repo_id = None
-    if not repo.encrypted:
-        search_repo_id = repo.id
-
     return render_to_response('repo_history.html', {
             "repo": repo,
             "commits": commits,
@@ -748,18 +744,18 @@ def repo_history(request, repo_id):
             'per_page': per_page,
             'page_next': page_next,
             'user_perm': user_perm,
-            'search_repo_id': search_repo_id,
             }, context_instance=RequestContext(request))
 
 @login_required
 def repo_view_snapshot(request, repo_id):
     """List repo snapshots.
     """
-    if not access_to_repo(request, repo_id, ''):
-        return render_permission_error(request, _(u'Unable to view library snapshots'))
-
     repo = get_repo(repo_id)
     if not repo:
+        raise Http404
+
+    # perm check
+    if check_repo_access_permission(repo.id, request.user) is None:
         raise Http404
 
     username = request.user.username
@@ -767,8 +763,8 @@ def repo_view_snapshot(request, repo_id):
         server_crypto = UserOptions.objects.is_server_crypto(username)
     except CryptoOptionNotSetError:
         # Assume server_crypto is ``False`` if this option is not set.
-        server_crypto = False   
-    
+        server_crypto = False
+
     password_set = False
     if repo.props.encrypted and \
             (repo.enc_version == 1 or (repo.enc_version == 2 and server_crypto)):
@@ -799,10 +795,6 @@ def repo_view_snapshot(request, repo_id):
     else:
         page_next = False
 
-    search_repo_id = None
-    if not repo.encrypted:
-        search_repo_id = repo.id
-
     return render_to_response('repo_view_snapshot.html', {
             "repo": repo,
             "commits": commits,
@@ -811,7 +803,6 @@ def repo_view_snapshot(request, repo_id):
             'next_page': current_page+1,
             'per_page': per_page,
             'page_next': page_next,
-            'search_repo_id': search_repo_id,
             }, context_instance=RequestContext(request))
 
 @login_required
@@ -820,16 +811,17 @@ def repo_history_revert(request, repo_id):
     if not repo:
         raise Http404
 
-    if not access_to_repo(request, repo_id):
-        return render_permission_error(request, _(u'You have no permission to restore library'))
+    # perm check
+    if check_repo_access_permission(repo.id, request.user) is None:
+        raise Http404
 
     username = request.user.username
     try:
         server_crypto = UserOptions.objects.is_server_crypto(username)
     except CryptoOptionNotSetError:
         # Assume server_crypto is ``False`` if this option is not set.
-        server_crypto = False   
-    
+        server_crypto = False
+
     password_set = False
     if repo.props.encrypted and \
             (repo.enc_version == 1 or (repo.enc_version == 2 and server_crypto)):
@@ -896,17 +888,6 @@ def get_diff(repo_id, arg1, arg2):
 
     return lists
 
-@login_required
-def modify_token(request, repo_id):
-    if not validate_owner(request, repo_id):
-        return HttpResponseRedirect(reverse('repo', args=[repo_id]))
-
-    token = request.POST.get('token', '')
-    if token:
-        seafserv_threaded_rpc.set_repo_token(repo_id, token)
-
-    return HttpResponseRedirect(reverse('repo', args=[repo_id]))
-
 def create_default_library(request):
     """Create a default library for user.
 
@@ -938,7 +919,7 @@ def create_default_library(request):
                                   default_repo, '/', obj_name, username, 0)
     except SearpcError as e:
         logger.error(e)
-        return 
+        return
 
     UserOptions.objects.set_default_repo(username, default_repo)
 
@@ -1003,17 +984,18 @@ def myhome(request):
         allow_public_share = True
 
     # user guide
+    user_can_add_repo = request.user.permissions.can_add_repo()
     need_guide = False
     if len(owned_repos) == 0:
         need_guide = UserOptions.objects.is_user_guide_enabled(username)
         if need_guide:
             UserOptions.objects.disable_user_guide(username)
-            # create a default library for user
-            create_default_library(request)
-
-            # refetch owned repos
-            owned_repos = get_owned_repo_list(request)
-            calculate_repos_last_modify(owned_repos)
+            if user_can_add_repo:
+                # create a default library for user
+                create_default_library(request)
+                # refetch owned repos
+                owned_repos = get_owned_repo_list(request)
+                calculate_repos_last_modify(owned_repos)
 
     repo_create_url = reverse("repo_create")
 
@@ -1032,7 +1014,7 @@ def myhome(request):
 @user_mods_check
 def starred(request):
     """List starred files.
-    
+
     Arguments:
     - `request`:
     """
@@ -1043,7 +1025,7 @@ def starred(request):
     return render_to_response('starred.html', {
             "starred_files": starred_files,
             }, context_instance=RequestContext(request))
-    
+
 
 @login_required
 @user_mods_check
@@ -1055,80 +1037,25 @@ def devices(request):
     return render_to_response('devices.html', {
             "devices": user_devices,
             }, context_instance=RequestContext(request))
-    
-@login_required
+
+@login_required_ajax
 def unlink_device(request):
-    if not request.is_ajax():
-        raise Http404
-        
     content_type = 'application/json; charset=utf-8'
 
     platform = request.POST.get('platform', '')
     device_id = request.POST.get('device_id', '')
-    
+
     if not platform or not device_id:
         return HttpResponseBadRequest(json.dumps({'error': _(u'Argument missing')}),
                 content_type=content_type)
-        
+
     try:
         do_unlink_device(request.user.username, platform, device_id)
     except:
         return HttpResponse(json.dumps({'error': _(u'Internal server error')}),
                 status=500, content_type=content_type)
-    
+
     return HttpResponse(json.dumps({'success': True}), content_type=content_type)
-
-@login_required
-@user_mods_check
-def client_mgmt(request):
-    username = request.user.username
-
-    clients = []
-    try:
-        clients = seafile_api.list_repo_tokens_by_email(username)
-    except:
-        pass
-
-    filter_clients = []
-    for c in clients:
-        if c.peer_name is not None:
-            filter_clients.append(c)
-
-    if filter_clients:
-        filter_clients.sort(key=lambda client: client.peer_name)
-        for i, client in enumerate(filter_clients):
-            if i == 0:
-                client.show_peer_name = True
-            else:
-                if client.peer_name != filter_clients[i-1].peer_name:
-                    client.show_peer_name = True
-
-    return render_to_response('client_mgmt.html', {
-            'clients': filter_clients,
-            }, context_instance=RequestContext(request))
-
-@login_required
-def client_unsync(request):
-    if not request.is_ajax():
-        raise Http404
-
-    content_type = 'application/json; charset=utf-8'
-
-    repo_id = request.GET.get('repo_id', '')
-    token = request.GET.get('token', '')
-
-    if not (repo_id and token):
-        return HttpResponse(json.dumps({'error': _(u'Argument missing')}),
-                status=400, content_type=content_type)
-
-    username = request.user.username
-    try:
-        seafile_api.delete_repo_token(repo_id, token, username)
-        return HttpResponse(json.dumps({'success': True}),
-                content_type=content_type)
-    except:
-        return HttpResponse(json.dumps({'error': _(u'Internal server error')}),
-                status=500, content_type=content_type)
 
 @login_required
 def unsetinnerpub(request, repo_id):
@@ -1181,7 +1108,7 @@ def unsetinnerpub(request, repo_id):
 #     quota_usage = seafserv_threaded_rpc.get_user_quota_usage(owner_name)
 
 #     user_dict = user_info(request, owner_name)
-    
+
 #     return render_to_response('ownerhome.html', {
 #             "owned_repos": owned_repos,
 #             "quota_usage": quota_usage,
@@ -1193,10 +1120,10 @@ def unsetinnerpub(request, repo_id):
 def repo_set_access_property(request, repo_id):
     ap = request.GET.get('ap', '')
     seafserv_threaded_rpc.repo_set_access_property(repo_id, ap)
-        
+
     return HttpResponseRedirect(reverse('repo', args=[repo_id]))
 
-@login_required    
+@login_required
 def repo_del_file(request, repo_id):
     if check_repo_access_permission(repo_id, request.user) != 'rw':
         return render_permission_error(request, _('Failed to delete file.'))
@@ -1212,10 +1139,12 @@ def repo_del_file(request, repo_id):
 
     url = reverse('repo', args=[repo_id]) + ('?p=%s' % urllib2.quote(parent_dir.encode('utf-8')))
     return HttpResponseRedirect(url)
-   
+
 def repo_access_file(request, repo_id, obj_id):
     """Delete or download file.
     TODO: need to be rewrite.
+
+    **NOTE**: download file is moved to file.py::download_file
     """
     repo = get_repo(repo_id)
     if not repo:
@@ -1285,15 +1214,15 @@ def file_upload_progress_page(request):
 
     '''
     uuid = request.GET.get('uuid', '')
-    httpserver_root = get_httpserver_root()
+    fileserver_root = get_fileserver_root()
     upload_progress_con_id = request.GET.get('upload_progress_con_id', '')
     return render_to_response('file_upload_progress_page.html', {
             'uuid': uuid,
-            'httpserver_root': httpserver_root,
+            'fileserver_root': fileserver_root,
             'upload_progress_con_id': upload_progress_con_id,
             }, context_instance=RequestContext(request))
 
-@login_required    
+@login_required
 def validate_filename(request):
     repo_id     = request.GET.get('repo_id')
     filename    = request.GET.get('filename')
@@ -1343,7 +1272,7 @@ def render_file_revisions (request, repo_id):
 
     if not commits:
         return render_error(request)
-        
+
     # Check whether user is repo owner
     if validate_owner(request, repo_id):
         is_owner = True
@@ -1358,10 +1287,6 @@ def render_file_revisions (request, repo_id):
 
     zipped = gen_path_link(path, repo.name)
 
-    search_repo_id = None
-    if not repo.encrypted:
-        search_repo_id = repo.id
-
     return render_to_response('file_revisions.html', {
         'repo': repo,
         'path': path,
@@ -1370,11 +1295,18 @@ def render_file_revisions (request, repo_id):
         'commits': commits,
         'is_owner': is_owner,
         'can_compare': can_compare,
-        'search_repo_id': search_repo_id,
         }, context_instance=RequestContext(request))
 
 @login_required
 def repo_revert_file (request, repo_id):
+    repo = get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    # perm check
+    if check_repo_access_permission(repo.id, request.user) is None:
+        raise Http404
+    
     commit_id = request.GET.get('commit')
     path      = request.GET.get('p')
     from_page = request.GET.get('from')
@@ -1411,6 +1343,14 @@ def repo_revert_file (request, repo_id):
 
 @login_required
 def repo_revert_dir (request, repo_id):
+    repo = get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    # perm check
+    if check_repo_access_permission(repo.id, request.user) is None:
+        raise Http404
+    
     commit_id = request.GET.get('commit')
     path      = request.GET.get('p')
 
@@ -1439,6 +1379,14 @@ def repo_revert_dir (request, repo_id):
 def file_revisions(request, repo_id):
     if request.method != 'GET':
         return render_error(request)
+
+    repo = get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    # perm check
+    if check_repo_access_permission(repo.id, request.user) is None:
+        raise Http404
 
     op = request.GET.get('op')
     if not op:
@@ -1478,91 +1426,6 @@ def file_revisions(request, repo_id):
         except Exception, e:
             return render_error(request, str(e))
 
-def view_shared_dir(request, token):
-    assert token is not None    # Checked by URLconf
-
-    fileshare = FileShare.objects.get_valid_dir_link_by_token(token)
-    if fileshare is None:
-        raise Http404
-
-    username = fileshare.username
-    repo_id = fileshare.repo_id
-    path = request.GET.get('p', '')
-    path = fileshare.path if not path else path
-    if path[-1] != '/':         # Normalize dir path 
-        path += '/'
-    
-    if not path.startswith(fileshare.path): 
-        path = fileshare.path   # Can not view upper dir of shared dir
-
-    repo = get_repo(repo_id)
-    if not repo:
-        raise Http404
-
-    dir_name = os.path.basename(path[:-1])
-    current_commit = get_commits(repo_id, 0, 1)[0]
-    file_list, dir_list = get_repo_dirents(request, repo, current_commit,
-                                           path)
-    zipped = gen_path_link(path, '')
-
-    if path == fileshare.path:  # When user view the shared dir..
-        # increase shared link view_cnt, 
-        fileshare = FileShare.objects.get(token=token)
-        fileshare.view_cnt = F('view_cnt') + 1
-        fileshare.save()
-
-    traffic_over_limit = user_traffic_over_limit(fileshare.username)
-        
-    return render_to_response('view_shared_dir.html', {
-            'repo': repo,
-            'token': token,
-            'path': path,
-            'username': username,
-            'dir_name': dir_name,
-            'file_list': file_list,
-            'dir_list': dir_list,
-            'zipped': zipped,
-            'traffic_over_limit': traffic_over_limit,
-            }, context_instance=RequestContext(request))
-
-def view_shared_upload_link(request, token):
-    assert token is not None    # Checked by URLconf
-
-    try:
-        uploadlink = UploadLinkShare.objects.get(token=token)
-    except UploadLinkShare.DoesNotExist:
-        raise Http404
-
-    username = uploadlink.username
-    repo_id = uploadlink.repo_id
-    path = uploadlink.path
-    dir_name = os.path.basename(path[:-1])
-
-    repo = get_repo(repo_id)
-    if not repo:
-        raise Http404
-
-    uploadlink.view_cnt = F('view_cnt') + 1
-    uploadlink.save()
-
-    max_upload_file_size = MAX_UPLOAD_FILE_SIZE
-    no_quota = True if seaserv.check_quota(repo_id) < 0 else False
-
-    token = seafile_api.get_httpserver_access_token(repo_id, 'dummy',
-                                                    'upload', request.user.username)
-    ajax_upload_url = gen_file_upload_url(token, 'upload-api').replace('api', 'aj')
-
-    return render_to_response('view_shared_upload_link.html', {
-            'repo': repo,
-            'token': token,
-            'path': path,
-            'username': username,
-            'dir_name': dir_name,
-            'max_upload_file_size': max_upload_file_size,
-            'no_quota': no_quota,
-            'ajax_upload_url': ajax_upload_url
-            }, context_instance=RequestContext(request))
-
 def demo(request):
     """
     Login as demo account.
@@ -1594,8 +1457,11 @@ def pubrepo(request):
     """
     Show public libraries.
     """
+    if not request.user.permissions.can_view_org():
+        raise Http404
+
     username = request.user.username
-    
+
     if request.cloud_mode and request.user.org is not None:
         org_id = request.user.org.org_id
         public_repos = seaserv.list_org_inner_pub_repos(org_id, username)
@@ -1606,7 +1472,7 @@ def pubrepo(request):
                 'public_repos': public_repos,
                 'create_shared_repo': True,
                 }, context_instance=RequestContext(request))
-        
+
     if not request.cloud_mode:
         public_repos = seaserv.list_inner_pub_repos(username)
         for r in public_repos:
@@ -1624,13 +1490,16 @@ def pubgrp(request):
     """
     Show public groups.
     """
+    if not request.user.permissions.can_view_org():
+        raise Http404
+
     if request.cloud_mode and request.user.org is not None:
         org_id = request.user.org.org_id
         groups = seaserv.get_org_groups(org_id, -1, -1)
         return render_to_response('organizations/pubgrp.html', {
                 'groups': groups,
                 }, context_instance=RequestContext(request))
-    
+
     if not request.cloud_mode:
         groups = seaserv.get_personal_groups(-1, -1)
         return render_to_response('pubgrp.html', {
@@ -1644,15 +1513,12 @@ def get_pub_users(request, start, limit):
         url_prefix = request.user.org.url_prefix
         users_plus_one = seaserv.get_org_users_by_url_prefix(url_prefix,
                                                              start, limit)
-    
+
     elif request.cloud_mode:
         raise Http404           # no pubuser in cloud mode
 
     else:
-        # Get ldap users first, if no users found, use database.
-        users_plus_one = seaserv.get_emailusers('LDAP', start, limit)
-        if len(users_plus_one) == 0:
-            users_plus_one = seaserv.get_emailusers('DB', start, limit)
+        users_plus_one = seaserv.get_emailusers('DB', start, limit)
     return users_plus_one
 
 def count_pub_users(request):
@@ -1664,13 +1530,16 @@ def count_pub_users(request):
     elif request.cloud_mode:
         return 0
     else:
-        return seaserv.count_emailusers()
+        return seaserv.ccnet_threaded_rpc.count_emailusers('DB')
 
 @login_required
 def pubuser(request):
     """
-    Show public users.
+    Show public users in database or ldap depending on request arg ``ldap``.
     """
+    if not request.user.permissions.can_view_org():
+        raise Http404
+
     # Make sure page request is an int. If not, deliver first page.
     try:
         current_page = int(request.GET.get('page', '1'))
@@ -1678,36 +1547,60 @@ def pubuser(request):
         current_page = 1
     per_page = 20           # show 20 users per-page
 
-    users_plus_one = get_pub_users(request, per_page * (current_page - 1),
-                                  per_page + 1)
+    # Show LDAP users or Database users.
+    have_ldap_user = True if len(seaserv.get_emailusers('LDAP', 0, 1)) > 0 else False
+
+    try:
+        ldap = True if int(request.GET.get('ldap', 0)) == 1 else False
+    except ValueError:
+        ldap = False
+
+    if ldap and have_ldap_user:
+        users_plus_one = seaserv.get_emailusers('LDAP',
+                                                per_page * (current_page - 1),
+                                                per_page + 1)
+    else:
+        users_plus_one = get_pub_users(request, per_page * (current_page - 1),
+                                       per_page + 1)
 
     has_prev = False if current_page == 1 else True
     has_next = True if len(users_plus_one) == per_page + 1 else False
 
-    emailusers_count = count_pub_users(request)
+    if ldap and have_ldap_user:
+        emailusers_count = seaserv.ccnet_threaded_rpc.count_emailusers('LDAP')
+    else:
+        emailusers_count = count_pub_users(request)
+
     num_pages = int(ceil(emailusers_count / float(per_page)))
     page_range = get_page_range(current_page, num_pages)
+    show_paginator = True if len(page_range) > 1 else False
 
     users = users_plus_one[:per_page]
     username = request.user.username
     contacts = Contact.objects.get_contacts_by_user(username)
-    contact_emails = [] 
+    contact_emails = []
     for c in contacts:
         contact_emails.append(c.contact_email)
     for u in users:
         if u.email == username or u.email in contact_emails:
             u.can_be_contact = False
         else:
-            u.can_be_contact = True 
+            u.can_be_contact = True
+
+    users = filter(lambda u: u.is_active, users)
 
     return render_to_response('pubuser.html', {
                 'users': users,
                 'current_page': current_page,
                 'has_prev': has_prev,
                 'has_next': has_next,
-                'page_range': page_range, 
+                'page_range': page_range,
+                'show_paginator': show_paginator,
+                'have_ldap_user': have_ldap_user,
+                'ldap': ldap,
                 }, context_instance=RequestContext(request))
 
+@login_required_ajax
 def repo_set_password(request):
     content_type = 'application/json; charset=utf-8'
 
@@ -1724,15 +1617,21 @@ def i18n(request):
 
     """
     from django.conf import settings
-    next = request.META.get('HTTP_REFERER', None)
-    if not next:
-        next = settings.SITE_ROOT
-    
-    lang = request.GET.get('lang', 'en')
+    next = request.META.get('HTTP_REFERER', settings.SITE_ROOT)
 
+    lang = request.GET.get('lang', settings.LANGUAGE_CODE)
+    if lang not in [e[0] for e in settings.LANGUAGES]:
+        # language code is not supported, use default.
+        lang = settings.LANGUAGE_CODE
+
+    # set language code to user profile
+    p = Profile.objects.get_profile_by_user(request.user.username)
+    if p is not None:
+        p.set_lang_code(lang)
+
+    # set language code to client
     res = HttpResponseRedirect(next)
     res.set_cookie(settings.LANGUAGE_COOKIE_NAME, lang, max_age=30*24*60*60)
-
     return res
 
 def repo_download_dir(request, repo_id):
@@ -1748,7 +1647,7 @@ def repo_download_dir(request, repo_id):
         dirname = os.path.basename(path.rstrip('/')) # Here use `rstrip` to cut out last '/' in path
     else:
         dirname = repo.name
-        
+
     allow_download = False
     fileshare_token = request.GET.get('t', '')
     from_shared_link = False
@@ -1816,13 +1715,12 @@ def activities(request):
     username = request.user.username
     start = int(request.GET.get('start', 0))
 
-    # if request.cloud_mode:
-    #     org_id = request.GET.get('org_id')
-    #     events, start = get_org_user_events(org_id, username, start, events_count)
-    # else:
-    #     events, start = get_user_events(username, start, events_count)
+    if is_org_context(request):
+        org_id = request.user.org.org_id
+        events, start = get_org_user_events(org_id, username, start, events_count)
+    else:
+        events, start = get_user_events(username, start, events_count)
 
-    events, start = get_user_events(username, start, events_count)
     events_more = True if len(events) == events_count else False
 
     event_groups = group_events_data(events)
@@ -1844,18 +1742,18 @@ def group_events_data(events):
         utc = dt.replace(tzinfo=timezone.utc)
         local = timezone.make_naive(utc, tz)
         return local
-    
+
     event_groups = []
     for e in events:
         e.time = utc_to_local(e.timestamp)
-        e.date = e.time.strftime("%Y-%m-%d")        
+        e.date = e.time.strftime("%Y-%m-%d")
         if e.etype == 'repo-update':
             e.author = e.commit.creator_name
         elif e.etype == 'repo-create':
             e.author = e.creator
         else:
             e.author = e.repo_owner
-        
+
         if len(event_groups) == 0 or \
             len(event_groups) > 0 and e.date != event_groups[-1]['date']:
             event_group = {}
@@ -1869,8 +1767,16 @@ def group_events_data(events):
 
 def pdf_full_view(request):
     '''For pdf view with pdf.js.'''
-    
+
     repo_id = request.GET.get('repo_id', '')
+    repo = get_repo(repo_id)
+    if not repo:
+        raise Http404
+
+    # perm check
+    if check_repo_access_permission(repo.id, request.user) is None:
+        raise Http404
+
     obj_id = request.GET.get('obj_id', '')
     file_name = request.GET.get('file_name', '')
     token = seafserv_rpc.web_get_access_token(repo_id, obj_id,
@@ -1895,7 +1801,7 @@ def convert_cmmt_desc_link(request):
     # perm check
     if check_repo_access_permission(repo_id, request.user) is None:
         raise Http404
-    
+
     diff_result = seafserv_threaded_rpc.get_diff(repo_id, '', cmmt_id)
     if not diff_result:
         raise Http404
@@ -1904,7 +1810,7 @@ def convert_cmmt_desc_link(request):
         if name not in d.name:
             # skip to next diff_result if file/folder user clicked does not
             # match the diff_result
-            continue            
+            continue
 
         if d.status == 'add' or d.status == 'mod': # Add or modify file
             return HttpResponseRedirect(reverse('repo_view_file', args=[repo_id]) + \
@@ -1934,7 +1840,7 @@ def toggle_modules(request):
 
     referer = request.META.get('HTTP_REFERER', None)
     next = settings.SITE_ROOT if referer is None else referer
-    
+
     username = request.user.username
     personal_wiki = request.POST.get('personal_wiki', 'off')
     if personal_wiki == 'on':

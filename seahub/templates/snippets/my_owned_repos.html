@@ -1,19 +1,21 @@
 {% load seahub_tags i18n %}
 
 <div id="tabs" class="tab-tabs">
-<div class="hd ovhd">
+<div class="hd">
     <ul class="tab-tabs-nav fleft">
+      {% if user.permissions.can_add_repo %}
         <li class="tab"><a href="#my-own-repos" class="a" id="mylib-tab">{% trans "Mine" %}</a></li>
         {% if ENABLE_SUB_LIBRARY and sub_lib_enabled %}
         <li class="tab"><a href="#my-sub-repos" class="a" id="sublib-tab">{% trans "Sub-libraries" %}</a></li>
         {% endif %}
+      {% endif %}
         <li class="tab"><a href="#repos-shared-to-me" class="a" id="shared-lib-tab">{% trans "Shared" %}</a></li>
         <li class="tab"><a href="#group-repos" class="a" id="grp-lib-tab">{% trans "Group" %}</a></li>
     </ul>
     <div class="fright">
         <button id="repo-create" class="hide"><img src="{{ MEDIA_URL }}img/add.png" alt="" class="add vam" /><span class="vam">{% trans "New Library" %}</span></button>
         {% if ENABLE_SUB_LIBRARY and sub_lib_enabled %}
-        <button id="sub-lib-create" class="hide"><img src="{{ MEDIA_URL }}img/add.png" alt="" class="add vam" /><span class="vam">{% trans "New Sub-library" %}</span></button>
+        <button id="sub-lib-create" class="hide" title="{% trans "New Sub-library" %}"><img src="{{ MEDIA_URL }}img/add.png" alt="" class="add vam" /><span class="vam">{% trans "New Sub-library" %}</span></button>
         {% endif %}
     </div>
 </div>
@@ -23,9 +25,9 @@
     <tr>
         <th width="4%"><!--icon--></th>
         <th width="24%">{% trans "Name" %} <span id="my-owned-repo-list-name-down" class="icon-caret-up cspt"></span> <span id="my-owned-repo-list-name-up" class="icon-caret-down cspt hide"></span></th>
-        <th width="40%">{% trans "Description" %}</th>
-        <th width="18%">{% trans "Last Update" %} <span id="my-owned-repo-list-time-up" class="icon-caret-up cspt hide"></span> <span id="my-owned-repo-list-time-down" class="icon-caret-down cspt"></span></th>
-        <th width="14%">{% trans "Operations" %}</th>
+        <th width="38%">{% trans "Description" %}</th>
+        <th width="22%">{% trans "Last Update" %} <span id="my-owned-repo-list-time-up" class="icon-caret-up cspt hide"></span> <span id="my-owned-repo-list-time-down" class="icon-caret-down cspt"></span></th>
+        <th width="12%">{% trans "Operations" %}</th>
     </tr>
     {% for repo in owned_repos %}
     {% if not ENABLE_SUB_LIBRARY or not repo.is_virtual %}
@@ -44,11 +46,8 @@
         {% endif %}
         <td data-id="{{ repo.props.id }}" data-name="{{ repo.props.name }}">
             <div>
-            {% if show_repo_download_button %}
-            <span class="icon-cloud-download download-btn op-icon vh" title="{% trans "Download and Sync" %}"></span>
-            {% endif %}
-            <span class="sf-icon-share repo-share-btn op-icon vh" title="{% trans "Share" %}"></span>
-            <span class="icon-trash repo-delete-btn op-icon vh" title="{% trans "Delete" %}"></span>
+                <img src="{{MEDIA_URL}}img/share_20.png" alt="" class="repo-share-btn op-icon vh" title="{% trans "Share" %}" />
+                <img src="{{MEDIA_URL}}img/rm.png" class="repo-delete-btn op-icon vh" title="{% trans "Delete" %}" />
             </div>
         </td>
     </tr>
@@ -70,9 +69,9 @@
     <tr>
         <th width="4%"><!--icon--></th>
         <th width="24%">{% trans "Name" %} <span id="my-sub-repo-list-name-down" class="icon-caret-up cspt"></span> <span id="my-sub-repo-list-name-up" class="icon-caret-down cspt hide"></span></th>
-        <th width="40%">{% trans "Origin" %}</th>
-        <th width="18%">{% trans "Last Update" %} <span id="my-sub-repo-list-time-up" class="icon-caret-up cspt hide"></span> <span id="my-sub-repo-list-time-down" class="icon-caret-down cspt"></span></th>
-        <th width="14%">{% trans "Operations" %}</th>
+        <th width="38%">{% trans "Origin" %}</th>
+        <th width="22%">{% trans "Last Update" %} <span id="my-sub-repo-list-time-up" class="icon-caret-up cspt hide"></span> <span id="my-sub-repo-list-time-down" class="icon-caret-down cspt"></span></th>
+        <th width="12%">{% trans "Operations" %}</th>
     </tr>
     {% for repo in sub_repos %}
     <tr data-repo_name="{{repo.props.name}}" data-time="{% if repo.latest_modify %}{{ repo.latest_modify }}{% else %}0{% endif %}">
@@ -90,13 +89,10 @@
         {% endif %}
         <td data-id="{{ repo.props.id }}" data-name="{{ repo.props.name }}">
             <div>
-            {% if show_repo_download_button %}
-            <span class="icon-cloud-download download-btn op-icon vh" title="{% trans "Download and Sync" %}"></span>
-            {% endif %}
-            {% if repo.is_original_owner %}
-            <span class="sf-icon-share repo-share-btn op-icon vh" title="{% trans "Share" %}"></span>
-            {% endif %}
-            <span class="icon-trash repo-delete-btn op-icon vh" title="{% trans "Delete" %}"></span>
+                {% if repo.is_original_owner %}
+                <img src="{{MEDIA_URL}}img/share_20.png" alt="" class="repo-share-btn op-icon vh" title="{% trans "Share" %}" />
+                {% endif %}
+                <img src="{{MEDIA_URL}}img/rm.png" class="repo-delete-btn op-icon vh" title="{% trans "Delete" %}" />
             </div>
         </td>
     </tr>
@@ -145,11 +141,8 @@
         <td>{{ repo.props.desc }}</td>
         <td>{% trans "Just now" %}</td>
         <td data-id="{{ repo.props.id }}" data-name="{{ repo.props.name }}">
-            {% if show_repo_download_button %}
-            <span class="icon-cloud-download download-btn op-icon vh" title="{% trans "Download and Sync" %}"></span>
-            {% endif %}
-            <span class="sf-icon-share repo-share-btn op-icon vh" title="{% trans "Share" %}"></span>
-            <span class="icon-trash repo-delete-btn op-icon vh" title="{% trans "Delete" %}"></span>
+            <img src="{{MEDIA_URL}}img/share_20.png" alt="" class="repo-share-btn op-icon vh" title="{% trans "Share" %}" />
+            <img src="{{MEDIA_URL}}img/rm.png" class="repo-delete-btn op-icon vh" title="{% trans "Delete" %}" />
         </td>
     </tr>
 </table>

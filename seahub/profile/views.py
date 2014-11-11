@@ -1,6 +1,6 @@
 # encoding: utf-8
 from django.conf import settings
-import simplejson as json
+import json
 from django.core.urlresolvers import reverse
 from django.http import HttpResponse, HttpResponseRedirect, Http404
 from django.shortcuts import render_to_response
@@ -20,6 +20,7 @@ from seahub.base.accounts import User
 from seahub.base.templatetags.seahub_tags import email2nickname
 from seahub.contacts.models import Contact
 from seahub.options.models import UserOptions, CryptoOptionNotSetError
+from seahub.views import get_owned_repo_list
 
 @login_required
 def edit_profile(request):
@@ -68,7 +69,8 @@ def edit_profile(request):
         default_repo = seafile_api.get_repo(default_repo_id)
     else:
         default_repo = None
-    owned_repos = seafile_api.get_owned_repo_list(username)
+
+    owned_repos = get_owned_repo_list(request)
 
     return render_to_response('profile/set_profile.html', {
             'form': form,
@@ -189,6 +191,10 @@ def default_repo(request):
     repo = seafile_api.get_repo(repo_id)
     if repo is None:
         messages.error(request, _('Failed to set default library.'))
+        return HttpResponseRedirect(next)
+
+    if repo.encrypted:
+        messages.error(request, _('Can not set encrypted library as default library.'))
         return HttpResponseRedirect(next)
 
     username = request.user.username

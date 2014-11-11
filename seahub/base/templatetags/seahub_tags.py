@@ -169,7 +169,10 @@ def translate_seahub_time(value):
     
     if isinstance(value, int) or isinstance(value, long): # check whether value is int
         val_ts = value
-        val = datetime.fromtimestamp(val_ts) # convert timestamp to datetime
+        try:
+            val = datetime.fromtimestamp(val_ts) # convert timestamp to datetime
+        except ValueError as e:
+            return ""
     elif isinstance(value, datetime):
         # FIXME: convert datetime to timestamp may cause problem, need a better way.
         val_ts = int(time.mktime(value.timetuple())) 
@@ -249,7 +252,7 @@ def email2id(value):
 
     key = normalize_cache_key(value, EMAIL_ID_CACHE_PREFIX)
     user_id = cache.get(key)
-    if not user_id:
+    if user_id is None:
         try:
             user = User.objects.get(email=value)
             user_id = user.id

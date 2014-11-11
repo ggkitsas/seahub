@@ -187,9 +187,10 @@ def get_group_and_contacts(email):
                 replies_json.append(d)
             replynum = replynum + 1
         elif n.is_user_message():
-            if n.detail not in contacts:
-                contacts.append(n.detail)
-            umsgnums[n.detail] = umsgnums.get(n.detail, 0) + 1
+            msg_from = n.user_message_detail_to_dict()['msg_from']
+            if msg_from not in contacts:
+                contacts.append(msg_from)
+            umsgnums[n.detail] = umsgnums.get(msg_from, 0) + 1
 
     for r in replies_json:
         r['msgnum'] = replies[r['msg_id']]
@@ -297,7 +298,7 @@ def get_group_msgs(groupid, page, username):
                     if not att.obj_id:
                         att.err = 'File does not exist'
                     else:
-                        att.token = seafile_api.get_httpserver_access_token(
+                        att.token = seafile_api.get_fileserver_access_token(
                             att.repo_id, att.obj_id, 'view', username)
                         att.img_url = gen_file_get_url(att.token, att.name)
 

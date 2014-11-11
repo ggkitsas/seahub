@@ -7,7 +7,7 @@ import re
 import random
 import string
 
-from seaserv import HTTP_SERVER_ROOT, HTTP_SERVER_PORT, HTTP_SERVER_HTTPS
+from seaserv import FILE_SERVER_ROOT, FILE_SERVER_PORT
 
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 
@@ -104,10 +104,10 @@ MIDDLEWARE_CLASSES = (
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',    
-    'django.contrib.messages.middleware.MessageMiddleware',    
+    'django.middleware.csrf.CsrfViewMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
     'seahub.auth.middleware.AuthenticationMiddleware',
-    'seahub.base.middleware.BaseMiddleware',    
+    'seahub.base.middleware.BaseMiddleware',
     'seahub.base.middleware.InfobarMiddleware',
 )
 
@@ -148,6 +148,7 @@ LANGUAGES = (
     ('pt-br', gettext_noop('Portuguese, Brazil')),
     ('ru', gettext_noop(u'Русский')),
     ('sk', gettext_noop('Slovak')),
+    ('sl', gettext_noop('Slovenian')),
     ('sv', gettext_noop('Svenska')),
     ('th', gettext_noop('Thai')),
     ('uk', gettext_noop('українська мова')),
@@ -161,7 +162,7 @@ LOCALE_PATHS = (
 TEMPLATE_CONTEXT_PROCESSORS = (
     'django.contrib.auth.context_processors.auth',
     'django.core.context_processors.debug',
-    'django.core.context_processors.i18n', 
+    'django.core.context_processors.i18n',
     'django.core.context_processors.media',
     'djblets.util.context_processors.siteRoot',
     'django.core.context_processors.request',
@@ -198,11 +199,26 @@ AUTHENTICATION_BACKENDS = (
 
 ACCOUNT_ACTIVATION_DAYS = 7
 
+# Enable or disable make group public
+ENABLE_MAKE_GROUP_PUBLIC = False
+
 # show or hide library 'download' button
 SHOW_REPO_DOWNLOAD_BUTTON = False
 
 # mininum length for password of encrypted library
-REPO_PASSWORD_MIN_LENGTH = 6
+REPO_PASSWORD_MIN_LENGTH = 8
+
+# mininum length for user's password
+USER_PASSWORD_MIN_LENGTH = 6
+
+# LEVEL based on four types of input:
+# num, upper letter, lower letter, other symbols
+# '3' means password must have at least 3 types of the above.
+USER_PASSWORD_STRENGTH_LEVEL = 3
+
+# default False, only check USER_PASSWORD_MIN_LENGTH
+# when True, check password strength level, STRONG(or above) is allowed
+USER_STRONG_PASSWORD_REQUIRED = False
 
 # Using server side crypto by default, otherwise, let user choose crypto method.
 FORCE_SERVER_CRYPTO = True
@@ -216,7 +232,7 @@ OFFICE_PREVIEW_MAX_SIZE = 2 * 1024 * 1024
 USE_PDFJS = True
 FILE_ENCODING_LIST = ['auto', 'utf-8', 'gbk', 'ISO-8859-1', 'ISO-8859-5']
 FILE_ENCODING_TRY_LIST = ['utf-8', 'gbk']
-HIGHLIGHT_KEYWORD = False # If True, highlight the keywords in the file when the visit is via clicking a link in 'search result' page. 
+HIGHLIGHT_KEYWORD = False # If True, highlight the keywords in the file when the visit is via clicking a link in 'search result' page.
 
 # Common settings(file extension, storage) for avatar and group avatar.
 AVATAR_FILE_STORAGE = '' # Replace with 'seahub.base.database_storage.DatabaseStorage' if save avatar files to database
@@ -230,7 +246,7 @@ AVATAR_DEFAULT_URL = '/avatars/default.png'
 AVATAR_DEFAULT_NON_REGISTERED_URL = '/avatars/default-non-register.jpg'
 AVATAR_MAX_AVATARS_PER_USER = 1
 AVATAR_CACHE_TIMEOUT = 14 * 24 * 60 * 60
-AUTO_GENERATE_AVATAR_SIZES = (16, 20, 28, 36, 40, 48, 60, 80)
+AUTO_GENERATE_AVATAR_SIZES = (16, 20, 24, 28, 32, 36, 40, 48, 60, 80)
 # Group avatar
 GROUP_AVATAR_STORAGE_DIR = 'avatars/groups'
 GROUP_AVATAR_DEFAULT_URL = 'avatars/groups/default.png'
@@ -344,7 +360,7 @@ LOGGING = {
             'filename': os.path.join(LOG_DIR, 'seahub.log'),
             'maxBytes': 1024*1024*10, # 10 MB
             'formatter':'standard',
-        },  
+        },
         'request_handler': {
                 'level':'WARN',
                 'class':'logging.handlers.RotatingFileHandler',
@@ -423,6 +439,8 @@ ENABLE_PUBFILE = False
 
 ENABLE_SUB_LIBRARY = True
 
+ENABLE_GUEST = False
+
 #####################
 # External settings #
 #####################
@@ -432,6 +450,10 @@ def load_local_settings(module):
     that begin with "EXTRA_".
 
     '''
+    if hasattr(module, 'HTTP_SERVER_ROOT'):
+        if not hasattr(module, 'FILE_SERVER_ROOT'):
+            module.FILE_SERVER_ROOT = module.HTTP_SERVER_ROOT
+        del module.HTTP_SERVER_ROOT
     for attr in dir(module):
         match = re.search('^EXTRA_(\w+)', attr)
         if match:
@@ -444,7 +466,7 @@ def load_local_settings(module):
         elif re.search('^[A-Z]', attr):
             globals()[attr] = getattr(module, attr)
 
-            
+
 # Load seahub_extra_settings.py
 try:
     from seahub_extra import seahub_extra_settings
@@ -470,7 +492,7 @@ try:
 except ImportError:
     pass
 else:
-    # In server release, sqlite3 db file is <topdir>/seahub.db 
+    # In server release, sqlite3 db file is <topdir>/seahub.db
     DATABASES['default']['NAME'] = os.path.join(install_topdir, 'seahub.db')
     if 'win32' not in sys.platform:
         # In server release, gunicorn is used to deploy seahub
@@ -492,8 +514,4 @@ if 'win32' in sys.platform:
 # other settings files.
 LOGIN_URL = SITE_ROOT + 'accounts/login'
 
-if HTTP_SERVER_HTTPS:
-    INNER_HTTP_SERVER_ROOT = 'https://127.0.0.1:' + HTTP_SERVER_PORT
-else:
-    INNER_HTTP_SERVER_ROOT = 'http://127.0.0.1:' + HTTP_SERVER_PORT
-    
+INNER_FILE_SERVER_ROOT = 'http://127.0.0.1:' + FILE_SERVER_PORT

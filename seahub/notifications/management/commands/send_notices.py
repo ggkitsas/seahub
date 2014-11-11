@@ -1,7 +1,7 @@
 # encoding: utf-8
 import datetime
 import logging
-import simplejson as json
+import json
 import os
 import re
 
@@ -9,6 +9,8 @@ from django.utils.http import urlquote
 from django.core.management.base import BaseCommand
 from django.core.urlresolvers import reverse
 from django.utils.html import escape
+from django.utils import translation
+from django.utils.translation import ugettext as _
 
 import seaserv
 from seaserv import seafile_api
@@ -18,13 +20,14 @@ from seahub.utils import send_html_email, get_service_url, \
     get_site_scheme_and_netloc
 import seahub.settings as settings
 from seahub.avatar.templatetags.avatar_tags import avatar
+from seahub.avatar.util import get_default_avatar_url
 from seahub.base.templatetags.seahub_tags import email2nickname
+from seahub.profile.models import Profile
 
 # Get an instance of a logger
 logger = logging.getLogger(__name__)
 
-site_name = settings.SITE_NAME
-subjects = (u'New notice on %s' % site_name, u'New notices on %s' % site_name)
+subject = _('New notice on %s') % settings.SITE_NAME
 
 class Command(BaseCommand):
     help = 'Send Email notifications to user if he/she has an unread notices every period of seconds .'
@@ -35,48 +38,82 @@ class Command(BaseCommand):
         self.do_action()
         logger.debug('Finish sending user notices.\n')
 
-    def get_avatar_url(self, username, default_size=20):
+    def get_avatar(self, username, default_size=32):
         img_tag = avatar(username, default_size)
         pattern = r'src="(.*)"'
         repl = r'src="%s\1"' % get_site_scheme_and_netloc()
         return re.sub(pattern, repl, img_tag)
+
+    def get_avatar_src(self, username, default_size=32):
+        avatar_img = self.get_avatar(username, default_size)
+        m = re.search('<img src="(.*?)".*', avatar_img)
+        if m:
+            return m.group(1)
+        else:
+            return ''
+
+    def get_default_avatar(self, default_size=32):
+        # user default avatar
+        img_tag = """<img src="%s" width="%s" height="%s" class="avatar" alt="" />""" % \
+                (get_default_avatar_url(), default_size, default_size)
+        pattern = r'src="(.*)"'
+        repl = r'src="%s\1"' % get_site_scheme_and_netloc()
+        return re.sub(pattern, repl, img_tag)
+
+    def get_default_avatar_src(self, default_size=32):
+        avatar_img = self.get_default_avatar(default_size)
+        m = re.search('<img src="(.*?)".*', avatar_img)
+        if m:
+            return m.group(1)
+        else:
+            return ''
 
     def format_priv_file_share_msg(self, notice):
         d = json.loads(notice.detail)
         priv_share_token = d['priv_share_token']
         notice.priv_shared_file_url = reverse('view_priv_shared_file',
                                               args=[priv_share_token])
-        notice.priv_shared_file_from = escape(email2nickname(d['share_from']))
+        notice.notice_from = escape(email2nickname(d['share_from']))
         notice.priv_shared_file_name = d['file_name']
-        notice.priv_shared_file_from_avatar_url = self.get_avatar_url(d['share_from'])
-
+        notice.avatar_src = self.get_avatar_src(d['share_from'])
         return notice
 
     def format_user_message(self, notice):
-        notice.user_msg_from = escape(email2nickname(notice.detail))
-        notice.user_msg_from_avatar_url = self.get_avatar_url(notice.detail)
-        notice.user_msg_url = reverse('user_msg_list', args=[notice.detail])
+        d = notice.user_message_detail_to_dict()
+        msg_from = d['msg_from']
+        message = d.get('message')
+
+        notice.notice_from = escape(email2nickname(msg_from))
+        notice.avatar_src = self.get_avatar_src(msg_from)
+        notice.user_msg_url = reverse('user_msg_list', args=[msg_from])
+        notice.user_msg = message
         return notice
 
     def format_group_message(self, notice):
-        d = json.loads(notice.detail)
+        d = notice.group_message_detail_to_dict()
         group_id = d['group_id']
+        message = d['message']
         group = seaserv.get_group(int(group_id))
         if group is None:
             notice.delete()
 
         notice.group_url = reverse('group_discuss', args=[group.id])
-        notice.group_msg_from = escape(email2nickname(d['msg_from']))
+        notice.notice_from = escape(email2nickname(d['msg_from']))
         notice.group_name = group.group_name
-        notice.group_msg_from_avatar_url = self.get_avatar_url(d['msg_from'])
+        notice.avatar_src = self.get_avatar_src(d['msg_from'])
+        notice.grp_msg = message
         return notice
 
     def format_grpmsg_reply(self, notice):
-        d = json.loads(notice.detail)
+        d = notice.grpmsg_reply_detail_to_dict()
+        message = d.get('reply_msg')
+        grpmsg_topic = d.get('grpmsg_topic')
 
         notice.group_msg_reply_url = reverse('msg_reply_new')
-        notice.group_msg_reply_from = escape(email2nickname(d['reply_from']))
-        notice.group_msg_reply_from_avatar_url = self.get_avatar_url(d['reply_from'])
+        notice.notice_from = escape(email2nickname(d['reply_from']))
+        notice.avatar_src = self.get_avatar_src(d['reply_from'])
+        notice.grp_reply_msg = message
+        notice.grpmsg_topic = grpmsg_topic
         return notice
 
     def format_repo_share_msg(self, notice):
@@ -88,9 +125,9 @@ class Command(BaseCommand):
             notice.delete()
 
         notice.repo_url = reverse('repo', args=[repo.id])
-        notice.repo_share_from = escape(email2nickname(d['share_from']))
+        notice.notice_from = escape(email2nickname(d['share_from']))
         notice.repo_name = repo.name
-        notice.repo_share_from_avatar_url = self.get_avatar_url(d['share_from'])
+        notice.avatar_src = self.get_avatar_src(d['share_from'])
         return notice
 
     def format_file_uploaded_msg(self, notice):
@@ -104,10 +141,11 @@ class Command(BaseCommand):
         folder_link = reverse('repo', args=[repo_id]) + '?p=' + urlquote(uploaded_to)
         folder_name = os.path.basename(uploaded_to)
 
-        notice.uploaded_file_link = file_link
-        notice.uploaded_file_name = file_name
-        notice.uploaded_folder_link = folder_link
-        notice.uploaded_folder_name = folder_name
+        notice.file_link = file_link
+        notice.file_name = file_name
+        notice.folder_link = folder_link
+        notice.folder_name = folder_name
+        notice.avatar_src = self.get_default_avatar_src()
         return notice
 
     def format_group_join_request(self, notice):
@@ -123,10 +161,14 @@ class Command(BaseCommand):
         notice.grpjoin_user_profile_url = reverse('user_profile',
                                                   args=[username])
         notice.grpjoin_group_url = reverse('group_members', args=[group_id])
-        notice.grpjoin_username = username
-        notice.grpjoin_group_name = group.group_name,
-        notice.grpjoin_request_msg = join_request_msg,
+        notice.notice_from = username
+        notice.grpjoin_group_name = group.group_name
+        notice.grpjoin_request_msg = join_request_msg
+        notice.avatar_src = self.get_avatar_src(username)
         return notice
+
+    def get_user_language(self, username):
+        return Profile.objects.get_user_language(username)
 
     def do_action(self):
         now = datetime.datetime.now()
@@ -157,6 +199,14 @@ class Command(BaseCommand):
                 email_ctx[notice.to_user] = 1
 
         for to_user, count in email_ctx.items():
+            # save current language
+            cur_language = translation.get_language()
+
+            # get and active user language
+            user_language = self.get_user_language(to_user)
+            translation.activate(user_language)
+            logger.info('Set language code to %s', user_language)
+
             notices = []
             for notice in unseen_notices:
                 if notice.to_user != to_user:
@@ -188,19 +238,20 @@ class Command(BaseCommand):
             if not notices:
                 continue
 
-            subject = subjects[1] if count > 1 else subjects[0]
-            c = { 
+            c = {
                 'to_user': to_user,
                 'notice_count': count,
                 'notices': notices,
-                'avatar_url': self.get_avatar_url(to_user),
-                'service_url': get_service_url(),
-                }   
+                }
 
             try:
-                send_html_email(subject, 'notifications/notice_email.html', c,
+                send_html_email(_('New notice on %s') % settings.SITE_NAME,
+                                'notifications/notice_email.html', c,
                                 None, [to_user])
 
                 logger.info('Successfully sent email to %s' % to_user)
             except Exception as e:
                 logger.error('Failed to send email to %s, error detail: %s' % (to_user, e))
+
+            # restore current language
+            translation.activate(cur_language)
