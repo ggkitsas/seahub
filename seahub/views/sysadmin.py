@@ -28,7 +28,7 @@ from seahub.utils import IS_EMAIL_CONFIGURED, string2list, is_valid_username
 from seahub.views import get_system_default_repo_id
 from seahub.forms import SetUserQuotaForm, AddUserForm, BatchAddUserForm
 from seahub.profile.models import Profile, DetailedProfile
-from seahub.share.models import FileShare
+from seahub.share.models import FileShare, UploadLinkShare
 
 import seahub.settings as settings
 from seahub.settings import INIT_PASSWD, SITE_NAME, \
@@ -361,6 +361,63 @@ def user_info(request, email):
     profile = Profile.objects.get_profile_by_user(email)
     d_profile = DetailedProfile.objects.get_detailed_profile_by_user(email)
 
+    user_shared_links = []
+    # download links
+    p_fileshares = []
+    fileshares = list(FileShare.objects.filter(username=email))
+    for fs in fileshares:
+        r = seafile_api.get_repo(fs.repo_id)
+        if not r:
+            fs.delete()
+            continue
+
+        if fs.is_file_share_link():
+            if seafile_api.get_file_id_by_path(r.id, fs.path) is None:
+                fs.delete()
+                continue
+            fs.filename = os.path.basename(fs.path)
+            path = fs.path.rstrip('/') # Normalize file path 
+            obj_id = seafile_api.get_file_id_by_path(r.id, path)
+            fs.file_size = seafile_api.get_file_size(r.store_id, r.version,
+                                                     obj_id)
+        else:
+            if seafile_api.get_dir_id_by_path(r.id, fs.path) is None:
+                fs.delete()
+                continue
+            fs.filename = os.path.basename(fs.path.rstrip('/'))
+            path = fs.path
+            if path[-1] != '/':         # Normalize dir path
+                path += '/'
+            # get dir size
+            dir_id = seafserv_threaded_rpc.get_dirid_by_path(r.id,
+                                                             r.head_cmmt_id,
+                                                             path)
+            fs.dir_size = seafserv_threaded_rpc.get_dir_size(r.store_id,
+                                                             r.version,
+                                                             dir_id)
+
+        fs.is_download = True
+        p_fileshares.append(fs)
+    p_fileshares.sort(key=lambda x: x.view_cnt, reverse=True)
+    user_shared_links += p_fileshares
+
+    # upload links
+    uploadlinks = list(UploadLinkShare.objects.filter(username=email))
+    p_uploadlinks = []
+    for link in uploadlinks:
+        r = seafile_api.get_repo(link.repo_id)
+        if not r:
+            link.delete()
+            continue
+        if seafile_api.get_dir_id_by_path(r.id, link.path) is None:
+            link.delete()
+            continue
+        link.dir_name = os.path.basename(link.path.rstrip('/'))
+        link.is_upload = True
+        p_uploadlinks.append(link)
+    p_uploadlinks.sort(key=lambda x: x.view_cnt, reverse=True)
+    user_shared_links += p_uploadlinks
+
     return render_to_response(
         'sysadmin/userinfo.html', {
             'owned_repos': owned_repos,
@@ -374,6 +431,7 @@ def user_info(request, email):
             'profile': profile,
             'd_profile': d_profile,
             'org_name': org_name,
+            "user_shared_links": user_shared_links,
             }, context_instance=RequestContext(request))
 
 @login_required_ajax
@@ -817,6 +875,31 @@ def sys_org_rename(request, org_id):
 
     return HttpResponseRedirect(next)
 
+@login_required_ajax
+@sys_staff_required
+def sys_org_set_member_quota(request, org_id):
+
+    if request.method != 'POST':
+        raise Http404
+
+    content_type = 'application/json; charset=utf-8'
+
+    try:
+        member_quota = int(request.POST.get('member_quota', '0'))
+    except ValueError:
+        return HttpResponse(json.dumps({ 'error': _('Input should be a number')}),
+                            status=400, content_type=content_type)
+
+    if member_quota > 0:
+        from seahub_extra.organizations.models import OrgMemberQuota
+        OrgMemberQuota.objects.set_quota(org_id, member_quota)
+        messages.success(request, _(u'Success'))
+        return HttpResponse(json.dumps({'success': True}), status=200,
+                            content_type=content_type)
+    else:
+        return HttpResponse(json.dumps({ 'error': _('Input number should be greater than 0')}),
+                            status=400, content_type=content_type)
+
 def sys_get_org_base_info(org_id):
 
     org = ccnet_threaded_rpc.get_org_by_id(org_id)
@@ -914,8 +997,15 @@ def sys_org_info_setting(request, org_id):
     org_id = int(org_id)
     org_basic_info = sys_get_org_base_info(org_id)
 
+    if getattr(settings, 'ORG_MEMBER_QUOTA_ENABLED', False):
+        from seahub_extra.organizations.models import OrgMemberQuota
+        org_basic_info['org_member_quota'] = OrgMemberQuota.objects.get_quota(org_id)
+    else:
+        org_basic_info['org_member_quota'] = None
+
     return render_to_response('sysadmin/sys_org_info_setting.html',
-           org_basic_info, context_instance=RequestContext(request))
+                              org_basic_info,
+                              context_instance=RequestContext(request))
 
 @login_required
 @sys_staff_required

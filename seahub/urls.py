@@ -175,6 +175,7 @@ urlpatterns = patterns('',
     (r'^share/', include('seahub.share.urls')),
     (r'^help/', include('seahub.help.urls')),
     url(r'^captcha/', include('captcha.urls')),
+    (r'^thumbnail/', include('seahub.thumbnail.urls')),
 
     ### system admin ###                       
     url(r'^sys/seafadmin/$', sys_repo_admin, name='sys_repo_admin'),
@@ -189,6 +190,7 @@ urlpatterns = patterns('',
     url(r'^sys/orgadmin/$', sys_org_admin, name='sys_org_admin'),
     url(r'^sys/orgadmin/(?P<org_id>\d+)/set_quota/$', sys_org_set_quota, name='sys_org_set_quota'),
     url(r'^sys/orgadmin/(?P<org_id>\d+)/rename/$', sys_org_rename, name='sys_org_rename'),
+    url(r'^sys/orgadmin/(?P<org_id>\d+)/set_member_quota/$', sys_org_set_member_quota, name='sys_org_set_member_quota'),
     url(r'^sys/orgadmin/(?P<org_id>\d+)/user/$', sys_org_info_user, name='sys_org_info_user'),
     url(r'^sys/orgadmin/(?P<org_id>\d+)/group/$', sys_org_info_group, name='sys_org_info_group'),
     url(r'^sys/orgadmin/(?P<org_id>\d+)/library/$', sys_org_info_library, name='sys_org_info_library'),
@@ -251,19 +253,23 @@ if getattr(settings, 'MULTI_TENANCY', False):
     )    
 
 # serve office converter static files
-from seahub.utils import HAS_OFFICE_CONVERTER
+from seahub.utils import HAS_OFFICE_CONVERTER, CLUSTER_MODE, OFFICE_CONVERTOR_NODE
 if HAS_OFFICE_CONVERTER:
-    from seahub.utils import OFFICE_HTML_DIR
-    from seahub.views.file import office_convert_query_status, office_convert_query_page_num
-    media_url = settings.MEDIA_URL.strip('/')
-    # my.seafile.com/media/office-html/<file_id>/<css, outline, page>
+    from seahub.views.file import office_convert_query_status, office_convert_query_page_num, \
+        office_convert_add_task, office_convert_get_page
     urlpatterns += patterns('',
-        url(r'^office-convert/static/(?P<path>.*)$', 'django.views.static.serve', {'document_root': OFFICE_HTML_DIR}, name='office_convert_static'),
-    )
-    urlpatterns += patterns('',
+        url(r'^office-convert/static/(?P<path>.*)$', office_convert_get_page, name='office_convert_get_page'),
         url(r'^office-convert/status/$', office_convert_query_status, name='office_convert_query_status'),
         url(r'^office-convert/page-num/$', office_convert_query_page_num, name='office_convert_query_page_num'),
     )
+
+    if CLUSTER_MODE and OFFICE_CONVERTOR_NODE:
+        urlpatterns += patterns('',
+            url(r'^office-convert/internal/add-task/$', office_convert_add_task),
+            url(r'^office-convert/internal/status/$', office_convert_query_status, {'internal': True}),
+            url(r'^office-convert/internal/page-num/$', office_convert_query_page_num, {'internal': True}),
+            url(r'^office-convert/internal/static/(?P<path>.*)$', office_convert_get_page, {'internal': True}),
+        )
 
 if TRAFFIC_STATS_ENABLED:
     from seahub.views.sysadmin import sys_traffic_admin

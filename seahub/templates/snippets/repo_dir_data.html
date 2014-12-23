@@ -1,5 +1,5 @@
 {% load seahub_tags i18n %}
-<div class="repo-file-list-topbar ovhd">
+<div class="repo-file-list-topbar">
     <p class="path fleft">
     {% for name, link in zipped %}
     {% if forloop.first or not forloop.last %}
@@ -11,7 +11,31 @@
     </p>
     <div class="repo-op fright">
         {% if user_perm == 'rw' %}
-        <button id="upload-file" class="op-btn"><span class="icon-upload-alt"></span>{% trans "Upload"%}</button>
+
+        {% if repo.encrypted and repo.enc_version == 2 and not server_crypto %}
+            <button id="upload-file" class="op-btn"><span class="icon-upload-alt"></span>{% trans "Upload"%}</button>
+        {% else %}
+            {% if no_quota %}
+            <button id="upload-file" class="op-btn"><span class="icon-upload-alt"></span>{% trans "Upload"%}</button>
+            {% else %}
+            <div id="upload-file" class="op-btn upload-file-btn">
+                <span class="icon-upload-alt"></span><span>{% trans "Upload"%}</span>
+                <input type="file" name="file" multiple />
+            </div>
+                {% if enable_upload_folder %}
+            <ul id="upload-menu" class="hide">
+                <li class="item">
+                <span>{% trans "Upload Files" %}</span>
+                <input type="file" name="file" multiple />
+                </li>
+                <li class="item">
+                <span>{% trans "Upload Folder" %}</span>
+                <input type="file" name="file" multiple directory webkitdirectory />
+                </li>
+            </ul>
+                {% endif %}
+            {% endif %}
+        {% endif %}
         <button id="add-new-dir" class="op-btn"><span class="icon-plus-sign-alt"></span>{% trans "New Directory"%}</button>
         {% if repo.encrypted and repo.enc_version == 2 and not server_crypto %}
         {% else %}

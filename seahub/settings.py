@@ -190,6 +190,7 @@ INSTALLED_APPS = (
     'seahub.profile',
     'seahub.share',
     'seahub.help',
+    'seahub.thumbnail',
 )
 
 
@@ -204,6 +205,9 @@ ENABLE_MAKE_GROUP_PUBLIC = False
 
 # show or hide library 'download' button
 SHOW_REPO_DOWNLOAD_BUTTON = False
+
+# enable 'upload folder' or not
+ENABLE_UPLOAD_FOLDER = False
 
 # mininum length for password of encrypted library
 REPO_PASSWORD_MIN_LENGTH = 8
@@ -441,6 +445,16 @@ ENABLE_SUB_LIBRARY = True
 
 ENABLE_GUEST = False
 
+############################
+# Settings for Seahub Priv #
+############################
+
+# Replace from email to current user instead of email sender.
+REPLACE_FROM_EMAIL = False
+
+# Add ``Reply-to`` header, see RFC #822.
+ADD_REPLY_TO_HEADER = False
+
 #####################
 # External settings #
 #####################
@@ -515,3 +529,13 @@ if 'win32' in sys.platform:
 LOGIN_URL = SITE_ROOT + 'accounts/login'
 
 INNER_FILE_SERVER_ROOT = 'http://127.0.0.1:' + FILE_SERVER_PORT
+
+# Enable or disable thumbnail
+ENABLE_THUMBNAIL = True
+
+# Absolute filesystem path to the directory that will hold thumbnail files.
+THUMBNAIL_ROOT = '%s/seahub/thumbnail/thumb/' % PROJECT_ROOT
+
+THUMBNAIL_EXTENSION = 'png'
+THUMBNAIL_DEFAULT_SIZE = '24'
+PREVIEW_DEFAULT_SIZE = '100'
