@@ -36,7 +36,7 @@ from seahub.auth import login as auth_login
 from seahub.auth import get_backends
 from seahub.base.accounts import User
 from seahub.base.decorators import user_mods_check
-from seahub.base.models import UserStarredFiles, DirFilesLastModifiedInfo
+from seahub.base.models import UserStarredFiles
 from seahub.contacts.models import Contact
 from seahub.options.models import UserOptions, CryptoOptionNotSetError
 from seahub.profile.models import Profile
@@ -191,9 +191,6 @@ def get_repo_dirents(request, repo, commit, path, offset=-1, limit=-1):
 
         username = request.user.username
         starred_files = get_dir_starred_files(username, repo.id, path)
-        if repo.version == 0:
-            last_modified_info = DirFilesLastModifiedInfo.objects.get_dir_files_last_modified(repo.id, path)
-
         fileshares = FileShare.objects.filter(repo_id=repo.id).filter(username=username)
         uploadlinks = UploadLinkShare.objects.filter(repo_id=repo.id).filter(username=username)
 
@@ -202,10 +199,7 @@ def get_repo_dirents(request, repo, commit, path, offset=-1, limit=-1):
         view_file_base = reverse('repo_view_file', args=[repo.id])
         file_history_base = reverse('file_revisions', args=[repo.id])
         for dirent in dirs:
-            if repo.version == 0:
-                dirent.last_modified = last_modified_info.get(dirent.obj_name, 0)
-            else:
-                dirent.last_modified = dirent.mtime
+            dirent.last_modified = dirent.mtime
             dirent.sharelink = ''
             dirent.uploadlink = ''
             if stat.S_ISDIR(dirent.props.mode):
@@ -807,6 +801,9 @@ def repo_view_snapshot(request, repo_id):
         raise Http404
 
     username = request.user.username
+    repo_owner = seafile_api.get_repo_owner(repo.id)
+    is_repo_owner = True if username == repo_owner else False
+
     try:
         server_crypto = UserOptions.objects.is_server_crypto(username)
     except CryptoOptionNotSetError:
@@ -845,6 +842,7 @@ def repo_view_snapshot(request, repo_id):
 
     return render_to_response('repo_view_snapshot.html', {
             "repo": repo,
+            "is_repo_owner": is_repo_owner,
             "commits": commits,
             'current_page': current_page,
             'prev_page': current_page-1,
@@ -855,15 +853,25 @@ def repo_view_snapshot(request, repo_id):
 
 @login_required
 def repo_history_revert(request, repo_id):
+
+    next = request.META.get('HTTP_REFERER', None)
+    if not next:
+        next = settings.SITE_ROOT
+
     repo = get_repo(repo_id)
     if not repo:
-        raise Http404
+        messages.error(request, _("Library does not exist"))
+        return HttpResponseRedirect(next)
 
     # perm check
-    if check_repo_access_permission(repo.id, request.user) is None:
-        raise Http404
-
+    perm = check_repo_access_permission(repo.id, request.user)
     username = request.user.username
+    repo_owner = seafile_api.get_repo_owner(repo.id)
+
+    if perm is None or repo_owner != username:
+        messages.error(request, _("Permission denied"))
+        return HttpResponseRedirect(next)
+
     try:
         server_crypto = UserOptions.objects.is_server_crypto(username)
     except CryptoOptionNotSetError:
@@ -899,7 +907,7 @@ def repo_history_revert(request, repo_id):
         else:
             return render_error(request, _(u'Unknown error'))
 
-    return HttpResponseRedirect(reverse(repo_history, args=[repo_id]))
+    return HttpResponseRedirect(next)
 
 def fpath_to_link(repo_id, path, is_dir=False):
     """Translate file path of a repo to its view link"""
